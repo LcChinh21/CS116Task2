@@ -103,6 +103,18 @@ def get_feature_cols(df: pd.DataFrame) -> List[str]:
     return [c for c in df.columns if c not in NON_FEATURE_COLS]
 
 
+def align_feature_columns(X: pd.DataFrame, feature_cols: List[str], fill_value: float = 0.0) -> pd.DataFrame:
+    """Add missing columns and return features in the trained column order."""
+    X = X.copy()
+    missing_cols = [c for c in feature_cols if c not in X.columns]
+    for col in missing_cols:
+        X[col] = fill_value
+    if missing_cols:
+        log.warning("Added %d missing prediction feature(s) with %s: %s",
+                    len(missing_cols), fill_value, missing_cols)
+    return X[feature_cols]
+
+
 def encode_categoricals(df: pd.DataFrame, cat_cols: List[str]) -> Tuple[pd.DataFrame, dict]:
     """Label encode categorical columns."""
     encoders = {}
@@ -237,8 +249,8 @@ def run_training():
         for col in [LOCATION_COL, ITEM_COL]:
             if col not in common_cols:
                 common_cols.append(col)
-        X_nov_m = X_nov[[c for c in common_cols if c in X_nov.columns]]
-        X_dec_m = X_dec[[c for c in common_cols if c in X_dec.columns]]
+        X_nov_m = align_feature_columns(X_nov, common_cols)
+        X_dec_m = align_feature_columns(X_dec, common_cols)
 
         model = train_model(
             X_nov_m, y_nov,
@@ -287,7 +299,7 @@ def run_training():
         predict_copy = predict_df.copy()
         for col in [LOCATION_COL, ITEM_COL]:
             predict_copy[col] = predict_copy[col].astype(str).astype("category").cat.codes
-        X_pred = predict_copy[[c for c in common_cols if c in predict_copy.columns]]
+        X_pred = align_feature_columns(predict_copy, common_cols)
         final_pred_raw = model.predict(X_pred, num_iteration=model.best_iteration)
         if mcfg["log"]:
             final_pred = np.expm1(final_pred_raw)
