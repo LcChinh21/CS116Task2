@@ -32,6 +32,7 @@ OUTPUT_DIR   = REPO_ROOT / CFG["OUTPUT_DIR"]
 LOCATION_COL = CFG["TX_LOCATION_COL"]
 ITEM_COL     = CFG["TX_ITEM_COL"]
 QTY_COL      = CFG["TX_QTY_COL"]
+SUBMISSION_GT_COL = "quantity_gt"
 SUBMISSION_PRED_COL = "quantity_pred"
 CLIP_MULT    = CFG.get("CLIP_MAX_MULTIPLIER", 2.0)
 FLOOR_THR    = CFG.get("FLOOR_THRESHOLD", 0.5)
@@ -154,6 +155,8 @@ def run_postprocess():
         subset=[LOCATION_COL, ITEM_COL]
     )
     sub_out = sub_out.rename(columns={"prediction": SUBMISSION_PRED_COL})
+    sub_out[SUBMISSION_GT_COL] = 0.0
+    sub_out = sub_out[[LOCATION_COL, ITEM_COL, SUBMISSION_GT_COL, SUBMISSION_PRED_COL]]
     out_path = OUTPUT_DIR / "submission_final.pkl"
     sub_out.to_pickle(out_path)
     log.info(f"Final submission saved: {out_path}")

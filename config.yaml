@@ -89,4 +89,4 @@ MIN_PREDICTION: 0.0
 FLOOR_THRESHOLD: 0.5       # predictions below this are floored to 0
 
 # ---- Submission -------------------------------------------------------------
-SUBMISSION_COLS: ["location", "item_id", "quantity_pred"]
+SUBMISSION_COLS: ["location", "item_id", "quantity_gt", "quantity_pred"]
