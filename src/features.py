@@ -22,7 +22,12 @@ except ImportError:
     import pandas as pd
     HAS_CUDF = False
     print("\n[INFO] Không tìm thấy cuDF. Đang chạy bằng Pandas (CPU) bình thường.\n")
+import sys
+import yaml
 import numpy as np
+import logging
+from typing import Optional
+from pathlib import Path
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -64,7 +69,13 @@ def load_data(sample: bool = False):
         if sample:
             tx = tx.sample(frac=CFG["DEBUG_SAMPLE_FRAC"], random_state=CFG["RANDOM_STATE"])
         purch = tx[tx[EVENT_COL] == PURCHASE_EVT].copy()
-        purch["price_num"] = pd.to_numeric(purch[PRICE_COL], errors="coerce").fillna(0)
+        
+        if HAS_CUDF:
+            # cuDF to_numeric is stricter, need string cast first if the type is unknown
+            purch["price_num"] = purch[PRICE_COL].astype(str).astype(float)
+        else:
+            purch["price_num"] = pd.to_numeric(purch[PRICE_COL], errors="coerce").fillna(0)
+            
         purch["revenue"]   = purch["price_num"] * purch[QTY_COL]
         # dt.floor('D') tương thích với cả pandas và cudf (thay cho dt.normalize())
         purch["date"]      = purch[DATE_COL].dt.floor('D')
@@ -211,12 +222,13 @@ def build_features_at_cutoff(
     feat["price_change_28_vs_90"] = feat["avg_price_28d"] / (feat["avg_price_90d"] + EPS)
 
     # last price
+    # Sửa sort_values: không sort toàn bộ dataframe lớn trên GPU để tránh OOM
+    # Thay vào đó chỉ giữ lại những dòng có price_num > 0, groupby và lấy date max
     last_price = (
-        purch_past[purch_past["price_num"] > 0]
-        .sort_values("date")
-        .groupby(gc)["price_num"]
-        .last()
-        .reset_index()
+        purch_past[purch_past["price_num"] > 0][[LOCATION_COL, ITEM_COL, "date", "price_num"]]
+        .sort_values([LOCATION_COL, ITEM_COL, "date"])
+        .drop_duplicates(subset=[LOCATION_COL, ITEM_COL], keep='last')
+        .drop(columns=["date"])
         .rename(columns={"price_num": "last_price"})
     )
     feat = feat.merge(last_price, on=gc, how="left")
@@ -403,7 +415,10 @@ def build_all_features():
 
     # Combine train
     if all_train_parts:
-        train_all = pd.concat(all_train_parts, ignore_index=True)
+        if HAS_CUDF:
+            train_all = pd_core.concat(all_train_parts, ignore_index=True)
+        else:
+            train_all = pd.concat(all_train_parts, ignore_index=True)
         train_out = OUTPUT_DIR / "features_train.parquet"
         train_all.to_parquet(train_out, index=False)
         log.info(f"Combined train features saved: {train_out} [{train_all.shape}]")

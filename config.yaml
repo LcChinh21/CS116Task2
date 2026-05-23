@@ -52,7 +52,7 @@ VAL_FOLDS:
 
 # ---- Model ------------------------------------------------------------------
 RANDOM_STATE: 42
-DEBUG_SAMPLE: true          # set true to use 10% sample for fast iteration
+DEBUG_SAMPLE: false          # set true to use 10% sample for fast iteration
 DEBUG_SAMPLE_FRAC: 0.10
 
 # LightGBM shared params

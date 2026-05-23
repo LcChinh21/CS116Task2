@@ -37,7 +37,7 @@ def audit_df(df: pd.DataFrame, name: str) -> dict:
         "rows": len(df),
         "columns": df.columns.tolist(),
         "dtypes": df.dtypes.to_dict(),
-        "nulls": df.isnull().sum().to_dict(),
+        "nulls": (len(df) - df.count()).to_dict(),
         "sample": df.head(3),
     }
     for col in ["location", "item_id", "event_type"]:
@@ -125,6 +125,39 @@ def run_audit():
     ]
 
     # -----------------------------------------------------------------------
+    # 4. Monthly purchase summary
+    # -----------------------------------------------------------------------
+    log.info("Computing monthly purchase summary ...")
+    purchase = tx[tx[CFG["TX_EVENT_COL"]] == CFG["TX_PURCHASE_EVENT"]].copy()
+    purchase["month"] = purchase[CFG["TX_DATE_COL"]].dt.to_period("M")
+    monthly = purchase.groupby("month").agg(
+        transactions=("quantity", "count"),
+        total_qty=(CFG["TX_QTY_COL"], "sum"),
+        total_revenue=("revenue", "sum"),
+        active_locations=(CFG["TX_LOCATION_COL"], "nunique"),
+        active_items=(CFG["TX_ITEM_COL"], "nunique"),
+    ).reset_index()
+
+    report_lines += [
+        "## 4. Monthly Purchase Summary (transaction_full_2025)",
+        monthly.to_markdown(index=False),
+        "",
+        "---",
+        "## Kết luận quan trọng",
+        "- **Target**: `transaction_full_2025`, event_type == 'Purchase', cột `quantity`.",
+        "- **Revenue**: `price` × `quantity` (price cần cast sang float).",
+        "- **event_full_2025**: Không có `location`, chỉ dùng để feature view_item/ATC theo item_id.",
+        "- **sale_status = 0**: Loại khỏi prediction (set = 0).",
+        "- **Submission target**: Dự báo tổng `quantity` Purchase tháng 01/2026 theo `location × item_id`.",
+        "",
+    ]
+
+    import gc
+    del tx
+    del purchase
+    gc.collect()
+
+    # -----------------------------------------------------------------------
     # 2. event_full_2025
     # -----------------------------------------------------------------------
     log.info("Loading event_full_2025.parquet ...")
@@ -182,33 +215,6 @@ def run_audit():
     report_lines.append("")
 
     # -----------------------------------------------------------------------
-    # 4. Monthly purchase summary
-    # -----------------------------------------------------------------------
-    log.info("Computing monthly purchase summary ...")
-    purchase = tx[tx[CFG["TX_EVENT_COL"]] == CFG["TX_PURCHASE_EVENT"]].copy()
-    purchase["month"] = purchase[CFG["TX_DATE_COL"]].dt.to_period("M")
-    monthly = purchase.groupby("month").agg(
-        transactions=("quantity", "count"),
-        total_qty=(CFG["TX_QTY_COL"], "sum"),
-        total_revenue=("revenue", "sum"),
-        active_locations=(CFG["TX_LOCATION_COL"], "nunique"),
-        active_items=(CFG["TX_ITEM_COL"], "nunique"),
-    ).reset_index()
-
-    report_lines += [
-        "## 4. Monthly Purchase Summary (transaction_full_2025)",
-        monthly.to_markdown(index=False),
-        "",
-        "---",
-        "## Kết luận quan trọng",
-        "- **Target**: `transaction_full_2025`, event_type == 'Purchase', cột `quantity`.",
-        "- **Revenue**: `price` × `quantity` (price cần cast sang float).",
-        "- **event_full_2025**: Không có `location`, chỉ dùng để feature view_item/ATC theo item_id.",
-        "- **sale_status = 0**: Loại khỏi prediction (set = 0).",
-        "- **Submission target**: Dự báo tổng `quantity` Purchase tháng 01/2026 theo `location × item_id`.",
-    ]
-
-    # -----------------------------------------------------------------------
     # Write report
     # -----------------------------------------------------------------------
     report_path = REPORT_DIR / "data_audit.md"
@@ -217,7 +223,7 @@ def run_audit():
     log.info(f"Report saved to {report_path}")
 
     log.info("=== DATA AUDIT COMPLETE ===")
-    return tx, ev, items
+    return None, None, None
 
 
 if __name__ == "__main__":
