@@ -168,6 +168,12 @@ Final submission file:
 outputs/submission_final.pkl
 ```
 
+Final submission schema:
+
+```text
+location, item_id, quantity_pred
+```
+
 ## Common fixes
 
 If `features.py` says cuDF is missing:

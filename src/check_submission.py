@@ -32,7 +32,8 @@ OUTPUT_DIR   = REPO_ROOT / CFG["OUTPUT_DIR"]
 DATA_DIR     = REPO_ROOT / CFG["DATA_DIR"]
 LOCATION_COL = CFG["TX_LOCATION_COL"]
 ITEM_COL     = CFG["TX_ITEM_COL"]
-REQUIRED_COLS = cfg_cols = CFG["SUBMISSION_COLS"]  # ["location", "item_id", "prediction"]
+REQUIRED_COLS = cfg_cols = CFG["SUBMISSION_COLS"]
+PRED_COL = REQUIRED_COLS[-1]
 
 
 def load_submission(path: Path) -> pd.DataFrame:
@@ -77,7 +78,7 @@ def check_submission(path: Path) -> bool:
         log.info("✓ No NaN values")
 
     # ---- 3. Negative prediction --------------------------------------------
-    n_neg = (sub["prediction"] < 0).sum()
+    n_neg = (sub[PRED_COL] < 0).sum()
     if n_neg > 0:
         errors.append(f"Negative predictions: {n_neg}")
     else:
@@ -98,7 +99,7 @@ def check_submission(path: Path) -> bool:
         )
         sub_merged = sub.merge(item_status, on=ITEM_COL, how="left")
         sale_zero_nonzero = sub_merged[
-            (sub_merged["sale_status"] == 0) & (sub_merged["prediction"] > 0)
+            (sub_merged["sale_status"] == 0) & (sub_merged[PRED_COL] > 0)
         ]
         if len(sale_zero_nonzero) > 0:
             warnings_list.append(f"sale_status=0 items with prediction > 0: {len(sale_zero_nonzero)}")
@@ -112,11 +113,11 @@ def check_submission(path: Path) -> bool:
     print(f"  File          : {path}")
     print(f"  Rows          : {len(sub):,}")
     print(f"  Columns       : {sub.columns.tolist()}")
-    print(f"  prediction min: {sub['prediction'].min():.4f}")
-    print(f"  prediction max: {sub['prediction'].max():.4f}")
-    print(f"  prediction mean:{sub['prediction'].mean():.4f}")
-    print(f"  Zeros         : {(sub['prediction'] == 0).sum():,}")
-    print(f"  Non-zero      : {(sub['prediction'] > 0).sum():,}")
+    print(f"  {PRED_COL} min: {sub[PRED_COL].min():.4f}")
+    print(f"  {PRED_COL} max: {sub[PRED_COL].max():.4f}")
+    print(f"  {PRED_COL} mean:{sub[PRED_COL].mean():.4f}")
+    print(f"  Zeros         : {(sub[PRED_COL] == 0).sum():,}")
+    print(f"  Non-zero      : {(sub[PRED_COL] > 0).sum():,}")
 
     if errors:
         print("\n❌ ERRORS:")
@@ -129,7 +130,7 @@ def check_submission(path: Path) -> bool:
             print(f"  - {w}")
 
     print("\nTop-15 largest predictions (potential outliers):")
-    print(sub.nlargest(15, "prediction")[[LOCATION_COL, ITEM_COL, "prediction"]].to_string(index=False))
+    print(sub.nlargest(15, PRED_COL)[[LOCATION_COL, ITEM_COL, PRED_COL]].to_string(index=False))
 
     if ok and not errors:
         print("\n✅ Submission looks valid!")

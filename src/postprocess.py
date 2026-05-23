@@ -32,6 +32,7 @@ OUTPUT_DIR   = REPO_ROOT / CFG["OUTPUT_DIR"]
 LOCATION_COL = CFG["TX_LOCATION_COL"]
 ITEM_COL     = CFG["TX_ITEM_COL"]
 QTY_COL      = CFG["TX_QTY_COL"]
+SUBMISSION_PRED_COL = "quantity_pred"
 CLIP_MULT    = CFG.get("CLIP_MAX_MULTIPLIER", 2.0)
 FLOOR_THR    = CFG.get("FLOOR_THRESHOLD", 0.5)
 EPS          = 1e-6
@@ -152,6 +153,7 @@ def run_postprocess():
     sub_out = sub[[LOCATION_COL, ITEM_COL, "prediction"]].drop_duplicates(
         subset=[LOCATION_COL, ITEM_COL]
     )
+    sub_out = sub_out.rename(columns={"prediction": SUBMISSION_PRED_COL})
     out_path = OUTPUT_DIR / "submission_final.pkl"
     sub_out.to_pickle(out_path)
     log.info(f"Final submission saved: {out_path}")
@@ -159,13 +161,14 @@ def run_postprocess():
     # Stats
     print("\n=== Final Submission Statistics ===")
     print(f"  Rows    : {len(sub_out):,}")
-    print(f"  Min     : {sub_out['prediction'].min():.4f}")
-    print(f"  Max     : {sub_out['prediction'].max():.4f}")
-    print(f"  Mean    : {sub_out['prediction'].mean():.4f}")
-    print(f"  Zeros   : {(sub_out['prediction'] == 0).sum():,}")
-    print(f"  Non-zero: {(sub_out['prediction'] > 0).sum():,}")
+    print(f"  Columns : {sub_out.columns.tolist()}")
+    print(f"  Min     : {sub_out[SUBMISSION_PRED_COL].min():.4f}")
+    print(f"  Max     : {sub_out[SUBMISSION_PRED_COL].max():.4f}")
+    print(f"  Mean    : {sub_out[SUBMISSION_PRED_COL].mean():.4f}")
+    print(f"  Zeros   : {(sub_out[SUBMISSION_PRED_COL] == 0).sum():,}")
+    print(f"  Non-zero: {(sub_out[SUBMISSION_PRED_COL] > 0).sum():,}")
     print("\nTop-10 largest predictions:")
-    print(sub_out.nlargest(10, "prediction").to_string(index=False))
+    print(sub_out.nlargest(10, SUBMISSION_PRED_COL).to_string(index=False))
 
     return sub_out
 
