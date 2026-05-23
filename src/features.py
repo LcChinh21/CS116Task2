@@ -13,12 +13,29 @@ Target: tổng purchased quantity của tháng tiếp theo
 Không leak tương lai: mọi feature <= cutoff.
 """
 
+import os
 import pandas as pd_core
+
+
+def env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+FEATURES_REQUIRE_GPU = env_flag("FEATURES_REQUIRE_GPU", False)
+
 try:
     import cudf as pd
     HAS_CUDF = True
     print("\n[INFO] TÌM THẤY CUDF! ĐANG SỬ DỤNG SỨC MẠNH GPU (VRAM) ĐỂ CHẠY FEATURE ENGINEERING!\n")
 except ImportError:
+    if FEATURES_REQUIRE_GPU:
+        raise RuntimeError(
+            "FEATURES_REQUIRE_GPU=1 was set, but cuDF is not installed. "
+            "Install RAPIDS cuDF or use a RAPIDS/CUDA image before running src/features.py."
+        )
     import pandas as pd
     HAS_CUDF = False
     print("\n[INFO] Không tìm thấy cuDF. Đang chạy bằng Pandas (CPU) bình thường.\n")
@@ -31,6 +48,10 @@ from pathlib import Path
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
+if HAS_CUDF:
+    log.info("Found cuDF. Feature engineering will run on GPU.")
+else:
+    log.info("cuDF not found. Feature engineering will run with pandas on CPU.")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))

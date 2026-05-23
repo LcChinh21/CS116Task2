@@ -19,3 +19,14 @@ powershell -ExecutionPolicy Bypass -File .\scripts\train_lgbm_gpu.ps1
 ```
 
 The runner sets `LGBM_USE_GPU=1` and mounts this repo to `/workspace`.
+
+## GPU feature engineering
+
+`src/features.py` uses cuDF automatically when RAPIDS cuDF is installed. To prevent
+an accidental CPU fallback, run it with:
+
+```bash
+FEATURES_REQUIRE_GPU=1 python src/features.py
+```
+
+If cuDF is missing, the command stops immediately instead of running pandas on CPU.
