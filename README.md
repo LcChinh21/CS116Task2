@@ -168,14 +168,21 @@ Final submission file:
 outputs/submission_final.pkl
 ```
 
-Final submission schema:
+The upload portal currently expects the pickle schema:
 
 ```text
-location, item_id, prediction
+location, item_id, quantity_gt, quantity_pred
 ```
 
-`postprocess.py` also writes `outputs/submission_final.csv` with the same three
-columns for platforms that require CSV upload.
+`quantity_gt` is a `0.0` placeholder because the Jan 2026 test target is blind.
+The actual forecast is in `quantity_pred`.
+
+Official task-format copies are also written:
+
+```text
+outputs/submission_final.csv      # location, item_id, prediction
+outputs/submission_official.pkl   # location, item_id, prediction
+```
 
 ## Common fixes
 

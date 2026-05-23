@@ -152,17 +152,31 @@ def run_postprocess():
     sub_out = sub[[LOCATION_COL, ITEM_COL, "prediction"]].drop_duplicates(
         subset=[LOCATION_COL, ITEM_COL]
     )
-    pkl_path = OUTPUT_DIR / "submission_final.pkl"
+
+    # Official task format from the statement: location, item_id, prediction.
     csv_path = OUTPUT_DIR / "submission_final.csv"
-    sub_out.to_pickle(pkl_path)
+    official_pkl_path = OUTPUT_DIR / "submission_official.pkl"
     sub_out.to_csv(csv_path, index=False)
-    log.info(f"Final submission saved: {pkl_path}")
-    log.info(f"CSV copy saved: {csv_path}")
+    sub_out.to_pickle(official_pkl_path)
+
+    # The current upload portal expects a pickle with quantity_gt/quantity_pred.
+    # quantity_gt is unavailable for the blind Jan 2026 test, so keep it as a
+    # placeholder while quantity_pred carries the actual forecast.
+    portal_out = sub_out.rename(columns={"prediction": "quantity_pred"})
+    portal_out["quantity_gt"] = 0.0
+    portal_out = portal_out[[LOCATION_COL, ITEM_COL, "quantity_gt", "quantity_pred"]]
+    pkl_path = OUTPUT_DIR / "submission_final.pkl"
+    portal_out.to_pickle(pkl_path)
+
+    log.info(f"Portal pickle saved: {pkl_path}")
+    log.info(f"Official CSV saved: {csv_path}")
+    log.info(f"Official pickle saved: {official_pkl_path}")
 
     # Stats
     print("\n=== Final Submission Statistics ===")
     print(f"  Rows    : {len(sub_out):,}")
     print(f"  Columns : {sub_out.columns.tolist()}")
+    print(f"  Portal  : {portal_out.columns.tolist()}")
     print(f"  Min     : {sub_out['prediction'].min():.4f}")
     print(f"  Max     : {sub_out['prediction'].max():.4f}")
     print(f"  Mean    : {sub_out['prediction'].mean():.4f}")
