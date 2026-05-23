@@ -13,6 +13,7 @@ Target: tổng purchased quantity của tháng tiếp theo
 Không leak tương lai: mọi feature <= cutoff.
 """
 
+import gc
 import os
 import pandas as pd_core
 
@@ -53,6 +54,18 @@ if HAS_CUDF:
 else:
     log.info("cuDF not found. Feature engineering will run with pandas on CPU.")
 
+
+def cleanup_memory():
+    """Release Python refs promptly; useful when cuDF intermediates are large."""
+    gc.collect()
+    if HAS_CUDF:
+        try:
+            import cupy as cp
+            cp.get_default_memory_pool().free_all_blocks()
+            cp.get_default_pinned_memory_pool().free_all_blocks()
+        except Exception:
+            pass
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
@@ -86,35 +99,52 @@ def load_data(sample: bool = False):
 
     if _purch_cache is None:
         log.info("Loading transaction_full_2025.parquet ...")
-        tx = pd.read_parquet(DATA_DIR / CFG["TRANSACTION_FILE"])
+        tx_cols = [LOCATION_COL, ITEM_COL, DATE_COL, QTY_COL, PRICE_COL, EVENT_COL]
+        tx = pd.read_parquet(DATA_DIR / CFG["TRANSACTION_FILE"], columns=tx_cols)
         if sample:
             tx = tx.sample(frac=CFG["DEBUG_SAMPLE_FRAC"], random_state=CFG["RANDOM_STATE"])
-        purch = tx[tx[EVENT_COL] == PURCHASE_EVT].copy()
+        purch = tx[tx[EVENT_COL] == PURCHASE_EVT][
+            [LOCATION_COL, ITEM_COL, DATE_COL, QTY_COL, PRICE_COL]
+        ].copy()
+        del tx
+        cleanup_memory()
         
         if HAS_CUDF:
             # cuDF to_numeric is stricter, need string cast first if the type is unknown
-            purch["price_num"] = purch[PRICE_COL].astype(str).astype(float)
+            purch["price_num"] = purch[PRICE_COL].astype(str).astype("float32")
+            purch[QTY_COL] = purch[QTY_COL].astype("float32")
         else:
             purch["price_num"] = pd.to_numeric(purch[PRICE_COL], errors="coerce").fillna(0)
             
         purch["revenue"]   = purch["price_num"] * purch[QTY_COL]
         # dt.floor('D') tương thích với cả pandas và cudf (thay cho dt.normalize())
         purch["date"]      = purch[DATE_COL].dt.floor('D')
+        purch = purch[[LOCATION_COL, ITEM_COL, QTY_COL, "price_num", "revenue", "date"]]
         _purch_cache = purch
         log.info(f"Purchases: {len(purch):,} rows")
+        cleanup_memory()
 
     if _event_cache is None:
         log.info("Loading event_full_2025.parquet ...")
-        ev = pd.read_parquet(DATA_DIR / CFG["EVENT_FILE"])
+        ev_cols = [ITEM_COL, CFG["EV_DATE_COL"], CFG["EV_EVENT_COL"], CFG["EV_QTY_COL"]]
+        ev = pd.read_parquet(DATA_DIR / CFG["EVENT_FILE"], columns=ev_cols)
         ev["date"] = ev[CFG["EV_DATE_COL"]].dt.floor('D')
+        if HAS_CUDF:
+            ev[CFG["EV_QTY_COL"]] = ev[CFG["EV_QTY_COL"]].astype("float32")
+        ev = ev[[ITEM_COL, CFG["EV_EVENT_COL"], CFG["EV_QTY_COL"], "date"]]
         _event_cache = ev
         log.info(f"Events: {len(ev):,} rows")
+        cleanup_memory()
 
     if _items_cache is None:
         log.info("Loading items.parquet ...")
-        items = pd.read_parquet(DATA_DIR / CFG["ITEMS_FILE"])
+        item_cols = [CFG["ITEM_ID_COL"], CFG["ITEM_SALE_STATUS_COL"]]
+        if CFG["ITEM_CATEGORY_COL"]:
+            item_cols.append(CFG["ITEM_CATEGORY_COL"])
+        items = pd.read_parquet(DATA_DIR / CFG["ITEMS_FILE"], columns=list(dict.fromkeys(item_cols)))
         _items_cache = items
         log.info(f"Items: {len(items):,} rows")
+        cleanup_memory()
 
     return _purch_cache, _event_cache, _items_cache
 
@@ -197,6 +227,8 @@ def build_features_at_cutoff(
     log.info(f"  Universe size: {len(universe):,}")
 
     feat = universe.copy()
+    del universe
+    cleanup_memory()
 
     # ================================================================
     # GROUP A: location × item_id features (purchased)
@@ -206,21 +238,31 @@ def build_features_at_cutoff(
     for days, suffix in [(7, "7d"), (14, "14d"), (28, "28d"), (56, "56d"), (90, "90d")]:
         s = rolling_sum(purch_past, cutoff, days, gc, QTY_COL, f"sales_sum_{suffix}")
         feat = feat.merge(s, on=gc, how="left")
+        del s
+        cleanup_memory()
 
     for days, suffix in [(7, "7d"), (14, "14d"), (28, "28d"), (56, "56d"), (90, "90d")]:
         m = rolling_mean(purch_past, cutoff, days, gc, QTY_COL, f"sales_mean_{suffix}")
         feat = feat.merge(m, on=gc, how="left")
+        del m
+        cleanup_memory()
 
     for days, suffix in [(28, "28d"), (56, "56d")]:
         s = rolling_std(purch_past, cutoff, days, gc, QTY_COL, f"sales_std_{suffix}")
         feat = feat.merge(s, on=gc, how="left")
+        del s
+        cleanup_memory()
 
     for days, suffix in [(28, "28d"), (56, "56d"), (90, "90d")]:
         nz = nonzero_days(purch_past, cutoff, days, gc, QTY_COL, f"sales_nonzero_days_{suffix}")
         feat = feat.merge(nz, on=gc, how="left")
+        del nz
+        cleanup_memory()
 
     dslast = days_since_last_sale(purch_past, cutoff, gc, QTY_COL)
     feat = feat.merge(dslast, on=gc, how="left")
+    del dslast
+    cleanup_memory()
 
     # Trend ratios
     feat["trend_7_vs_28"]  = feat["sales_mean_7d"]  / (feat["sales_mean_28d"]  + EPS)
@@ -230,6 +272,8 @@ def build_features_at_cutoff(
     for days, suffix in [(7, "7d"), (28, "28d"), (90, "90d")]:
         rs = rolling_sum(purch_past, cutoff, days, gc, "revenue", f"revenue_sum_{suffix}")
         feat = feat.merge(rs, on=gc, how="left")
+        del rs
+        cleanup_memory()
 
     # avg_price_28d / 90d
     for days, suffix in [(28, "28d"), (90, "90d")]:
@@ -239,6 +283,8 @@ def build_features_at_cutoff(
         feat = feat.merge(rev.rename(columns={f"_rev_{suffix}": f"__r{suffix}"}), on=gc, how="left")
         feat[f"avg_price_{suffix}"] = feat[f"__r{suffix}"] / (feat[f"__q{suffix}"] + EPS)
         feat.drop(columns=[f"__q{suffix}", f"__r{suffix}"], inplace=True)
+        del cnt, rev
+        cleanup_memory()
 
     feat["price_change_28_vs_90"] = feat["avg_price_28d"] / (feat["avg_price_90d"] + EPS)
 
@@ -253,6 +299,8 @@ def build_features_at_cutoff(
         .rename(columns={"price_num": "last_price"})
     )
     feat = feat.merge(last_price, on=gc, how="left")
+    del last_price
+    cleanup_memory()
 
     # ================================================================
     # GROUP B: item-level (across all locations)
@@ -262,6 +310,8 @@ def build_features_at_cutoff(
     for days, suffix in [(7, "7d"), (28, "28d"), (90, "90d")]:
         s = rolling_sum(purch_past, cutoff, days, gi, QTY_COL, f"item_sales_sum_{suffix}")
         feat = feat.merge(s, on=gi, how="left")
+        del s
+        cleanup_memory()
 
     for days, suffix in [(28, "28d"), (90, "90d")]:
         start = cutoff - pd_core.Timedelta(days=days)
@@ -269,6 +319,8 @@ def build_features_at_cutoff(
         nloc = w.groupby(gi)[LOCATION_COL].nunique().reset_index().rename(
             columns={LOCATION_COL: f"item_num_locations_sold_{suffix}"})
         feat = feat.merge(nloc, on=gi, how="left")
+        del w, nloc
+        cleanup_memory()
 
     item_sum28  = feat.groupby(gi)["item_sales_sum_28d"].first().reset_index()
     item_sum90  = feat.groupby(gi)["item_sales_sum_90d"].first().reset_index()
@@ -277,6 +329,8 @@ def build_features_at_cutoff(
         item_trend["item_sales_sum_28d"] / (item_trend["item_sales_sum_90d"] + EPS)
     )
     feat = feat.merge(item_trend[[gi[0], "item_global_trend_28_vs_90"]], on=gi, how="left")
+    del item_sum28, item_sum90, item_trend
+    cleanup_memory()
 
     # ================================================================
     # GROUP C: location-level
@@ -286,6 +340,8 @@ def build_features_at_cutoff(
     for days, suffix in [(7, "7d"), (28, "28d"), (90, "90d")]:
         s = rolling_sum(purch_past, cutoff, days, gl, QTY_COL, f"location_sales_sum_{suffix}")
         feat = feat.merge(s, on=gl, how="left")
+        del s
+        cleanup_memory()
 
     for days, suffix in [(28, "28d"), (90, "90d")]:
         start = cutoff - pd_core.Timedelta(days=days)
@@ -293,6 +349,8 @@ def build_features_at_cutoff(
         nitems = w.groupby(gl)[ITEM_COL].nunique().reset_index().rename(
             columns={ITEM_COL: f"location_active_items_{suffix}"})
         feat = feat.merge(nitems, on=gl, how="left")
+        del w, nitems
+        cleanup_memory()
 
     loc_sum28 = feat.groupby(gl)["location_sales_sum_28d"].first().reset_index()
     loc_sum90 = feat.groupby(gl)["location_sales_sum_90d"].first().reset_index()
@@ -301,6 +359,8 @@ def build_features_at_cutoff(
         loc_trend["location_sales_sum_28d"] / (loc_trend["location_sales_sum_90d"] + EPS)
     )
     feat = feat.merge(loc_trend[[gl[0], "location_sales_trend_28_vs_90"]], on=gl, how="left")
+    del loc_sum28, loc_sum90, loc_trend
+    cleanup_memory()
 
     # ================================================================
     # GROUP D: Category features (if available)
@@ -327,6 +387,11 @@ def build_features_at_cutoff(
             feat["item_cat_qty_28d"] / (feat["category_sales_sum_28d"] + EPS)
         )
         feat.drop(columns=["item_cat_qty_28d"], inplace=True, errors="ignore")
+        del cat_map, purch_past_cat, cat_sum, item_cat_sum
+        cleanup_memory()
+
+    del purch_past
+    cleanup_memory()
 
     # ================================================================
     # GROUP E: Event features (view_item / add_to_cart by item_id)
@@ -339,8 +404,12 @@ def build_features_at_cutoff(
     for days, suffix in [(1, "1d"), (3, "3d"), (7, "7d"), (14, "14d"), (28, "28d")]:
         sv = rolling_sum(ev_view, cutoff, days, [ITEM_COL], CFG["EV_QTY_COL"], f"view_count_{suffix}")
         feat = feat.merge(sv, on=ITEM_COL, how="left")
+        del sv
+        cleanup_memory()
         sa = rolling_sum(ev_atc,  cutoff, days, [ITEM_COL], CFG["EV_QTY_COL"], f"atc_count_{suffix}")
         feat = feat.merge(sa, on=ITEM_COL, how="left")
+        del sa
+        cleanup_memory()
 
     # Ratio features
     feat["view_to_atc_rate_28d"]    = feat["atc_count_28d"]   / (feat["view_count_28d"]   + EPS)
@@ -348,6 +417,8 @@ def build_features_at_cutoff(
     feat["view_to_purchase_rate_28d"]= feat["sales_sum_28d"]  / (feat["view_count_28d"]   + EPS)
     feat["recent_view_ratio"]       = feat["view_count_7d"]   / (feat["view_count_28d"]   + EPS)
     feat["recent_atc_ratio"]        = feat["atc_count_7d"]    / (feat["atc_count_28d"]    + EPS)
+    del events_past, ev_view, ev_atc
+    cleanup_memory()
 
     # ================================================================
     # GROUP F: Calendar features
@@ -373,6 +444,8 @@ def build_features_at_cutoff(
                  CFG["ITEM_SALE_STATUS_COL"]: "sale_status"}
     )
     feat = feat.merge(item_meta, on=ITEM_COL, how="left")
+    del item_meta
+    cleanup_memory()
 
     # ================================================================
     # TARGET (if specified and not leaking future)
@@ -387,6 +460,8 @@ def build_features_at_cutoff(
             .reset_index()
         )
         feat = feat.merge(target_df, on=[LOCATION_COL, ITEM_COL], how="left")
+        del target_df
+        cleanup_memory()
         feat["sales_next_month"]   = feat["sales_next_month"].fillna(0)
         feat["revenue_next_month"] = feat["revenue_next_month"].fillna(0)
 
