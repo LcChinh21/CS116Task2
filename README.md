@@ -171,11 +171,11 @@ outputs/submission_final.pkl
 Final submission schema:
 
 ```text
-location, item_id, quantity_gt, quantity_pred
+location, item_id, prediction
 ```
 
-`quantity_gt` is kept as `0.0` because the real Jan 2026 ground truth is not
-available in the public data, but the submission checker expects the column.
+`postprocess.py` also writes `outputs/submission_final.csv` with the same three
+columns for platforms that require CSV upload.
 
 ## Common fixes
 
