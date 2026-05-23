@@ -171,10 +171,9 @@ outputs/submission_final.pkl
 The upload portal currently expects the pickle schema:
 
 ```text
-location, item_id, quantity_gt, quantity_pred
+location, item_id, quantity_pred
 ```
 
-`quantity_gt` is a `0.0` placeholder because the Jan 2026 test target is blind.
 The actual forecast is in `quantity_pred`.
 
 Official task-format copies are also written:

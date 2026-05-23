@@ -159,12 +159,9 @@ def run_postprocess():
     sub_out.to_csv(csv_path, index=False)
     sub_out.to_pickle(official_pkl_path)
 
-    # The current upload portal expects a pickle with quantity_gt/quantity_pred.
-    # quantity_gt is unavailable for the blind Jan 2026 test, so keep it as a
-    # placeholder while quantity_pred carries the actual forecast.
+    # The current upload portal expects quantity_pred in the pickle.
     portal_out = sub_out.rename(columns={"prediction": "quantity_pred"})
-    portal_out["quantity_gt"] = 0.0
-    portal_out = portal_out[[LOCATION_COL, ITEM_COL, "quantity_gt", "quantity_pred"]]
+    portal_out = portal_out[[LOCATION_COL, ITEM_COL, "quantity_pred"]]
     pkl_path = OUTPUT_DIR / "submission_final.pkl"
     portal_out.to_pickle(pkl_path)
 

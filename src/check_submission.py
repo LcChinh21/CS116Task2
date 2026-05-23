@@ -33,7 +33,7 @@ DATA_DIR     = REPO_ROOT / CFG["DATA_DIR"]
 LOCATION_COL = CFG["TX_LOCATION_COL"]
 ITEM_COL     = CFG["TX_ITEM_COL"]
 OFFICIAL_COLS = CFG["SUBMISSION_COLS"]
-PORTAL_COLS = [LOCATION_COL, ITEM_COL, "quantity_gt", "quantity_pred"]
+PORTAL_COLS = [LOCATION_COL, ITEM_COL, "quantity_pred"]
 
 
 def infer_submission_schema(sub: pd.DataFrame) -> tuple:
