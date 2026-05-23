@@ -13,13 +13,16 @@ Target: tổng purchased quantity của tháng tiếp theo
 Không leak tương lai: mọi feature <= cutoff.
 """
 
-import sys
-import logging
-import yaml
-import pandas as pd
+import pandas as pd_core
+try:
+    import cudf as pd
+    HAS_CUDF = True
+    print("\n[INFO] TÌM THẤY CUDF! ĐANG SỬ DỤNG SỨC MẠNH GPU (VRAM) ĐỂ CHẠY FEATURE ENGINEERING!\n")
+except ImportError:
+    import pandas as pd
+    HAS_CUDF = False
+    print("\n[INFO] Không tìm thấy cuDF. Đang chạy bằng Pandas (CPU) bình thường.\n")
 import numpy as np
-from pathlib import Path
-from typing import Optional
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -63,14 +66,15 @@ def load_data(sample: bool = False):
         purch = tx[tx[EVENT_COL] == PURCHASE_EVT].copy()
         purch["price_num"] = pd.to_numeric(purch[PRICE_COL], errors="coerce").fillna(0)
         purch["revenue"]   = purch["price_num"] * purch[QTY_COL]
-        purch["date"]      = purch[DATE_COL].dt.normalize()
+        # dt.floor('D') tương thích với cả pandas và cudf (thay cho dt.normalize())
+        purch["date"]      = purch[DATE_COL].dt.floor('D')
         _purch_cache = purch
         log.info(f"Purchases: {len(purch):,} rows")
 
     if _event_cache is None:
         log.info("Loading event_full_2025.parquet ...")
         ev = pd.read_parquet(DATA_DIR / CFG["EVENT_FILE"])
-        ev["date"] = ev[CFG["EV_DATE_COL"]].dt.normalize()
+        ev["date"] = ev[CFG["EV_DATE_COL"]].dt.floor('D')
         _event_cache = ev
         log.info(f"Events: {len(ev):,} rows")
 
@@ -86,17 +90,17 @@ def load_data(sample: bool = False):
 # ---------------------------------------------------------------------------
 # Rolling aggregations helper
 # ---------------------------------------------------------------------------
-def rolling_sum(df: pd.DataFrame, cutoff: pd.Timestamp, days: int,
-                group_cols, val_col: str, alias: str) -> pd.DataFrame:
+def rolling_sum(df, cutoff: pd_core.Timestamp, days: int,
+                group_cols, val_col: str, alias: str):
     """Tổng val_col trong `days` ngày trước cutoff, grouped by group_cols."""
-    start = cutoff - pd.Timedelta(days=days)
+    start = cutoff - pd_core.Timedelta(days=days)
     window = df[(df["date"] > start) & (df["date"] <= cutoff)]
     agg = window.groupby(group_cols)[val_col].sum().reset_index().rename(columns={val_col: alias})
     return agg
 
 
 def rolling_mean(df, cutoff, days, group_cols, val_col, alias):
-    start = cutoff - pd.Timedelta(days=days)
+    start = cutoff - pd_core.Timedelta(days=days)
     window = df[(df["date"] > start) & (df["date"] <= cutoff)]
     # daily mean: sum / days
     daily_sum = window.groupby(group_cols)[val_col].sum().reset_index()
@@ -105,7 +109,7 @@ def rolling_mean(df, cutoff, days, group_cols, val_col, alias):
 
 
 def rolling_std(df, cutoff, days, group_cols, val_col, alias):
-    start = cutoff - pd.Timedelta(days=days)
+    start = cutoff - pd_core.Timedelta(days=days)
     window = df[(df["date"] > start) & (df["date"] <= cutoff)].copy()
     # group by date first, then std across days
     daily = window.groupby([*group_cols, "date"])[val_col].sum().reset_index()
@@ -114,7 +118,7 @@ def rolling_std(df, cutoff, days, group_cols, val_col, alias):
 
 
 def nonzero_days(df, cutoff, days, group_cols, val_col, alias):
-    start = cutoff - pd.Timedelta(days=days)
+    start = cutoff - pd_core.Timedelta(days=days)
     window = df[(df["date"] > start) & (df["date"] <= cutoff)].copy()
     daily = window.groupby([*group_cols, "date"])[val_col].sum().reset_index()
     nz = (daily[val_col] > 0).groupby([daily[c] for c in group_cols]).sum()
@@ -133,7 +137,9 @@ def days_since_last_sale(df, cutoff, group_cols, val_col, alias="days_since_last
         .reset_index()
         .rename(columns={"date": "last_sale_date"})
     )
-    last_sale[alias] = (cutoff - last_sale["last_sale_date"]).dt.days
+    # Extract days carefully for both pandas and cudf
+    td = cutoff - last_sale["last_sale_date"]
+    last_sale[alias] = td.dt.days
     return last_sale[group_cols + [alias]]
 
 
@@ -141,12 +147,12 @@ def days_since_last_sale(df, cutoff, group_cols, val_col, alias="days_since_last
 # Build features at a given cutoff date
 # ---------------------------------------------------------------------------
 def build_features_at_cutoff(
-    purch: pd.DataFrame,
-    events: pd.DataFrame,
-    items: pd.DataFrame,
-    cutoff: pd.Timestamp,
+    purch,
+    events,
+    items,
+    cutoff: pd_core.Timestamp,
     target_month_year: Optional[tuple] = None,   # (year, month)
-) -> pd.DataFrame:
+):
     """
     Tạo feature table tại thời điểm cutoff.
     target_month_year: nếu cung cấp → tính target_sales (không leak).
@@ -225,7 +231,7 @@ def build_features_at_cutoff(
         feat = feat.merge(s, on=gi, how="left")
 
     for days, suffix in [(28, "28d"), (90, "90d")]:
-        start = cutoff - pd.Timedelta(days=days)
+        start = cutoff - pd_core.Timedelta(days=days)
         w = purch_past[(purch_past["date"] > start) & (purch_past["date"] <= cutoff)]
         nloc = w.groupby(gi)[LOCATION_COL].nunique().reset_index().rename(
             columns={LOCATION_COL: f"item_num_locations_sold_{suffix}"})
@@ -249,7 +255,7 @@ def build_features_at_cutoff(
         feat = feat.merge(s, on=gl, how="left")
 
     for days, suffix in [(28, "28d"), (90, "90d")]:
-        start = cutoff - pd.Timedelta(days=days)
+        start = cutoff - pd_core.Timedelta(days=days)
         w = purch_past[(purch_past["date"] > start) & (purch_past["date"] <= cutoff)]
         nitems = w.groupby(gl)[ITEM_COL].nunique().reset_index().rename(
             columns={ITEM_COL: f"location_active_items_{suffix}"})
@@ -371,19 +377,29 @@ def build_all_features():
     # Validation folds
     folds = [
         # cutoff date, (target_year, target_month), save_name
-        (pd.Timestamp("2025-10-31"), (2025, 11), "features_val_nov"),
-        (pd.Timestamp("2025-11-30"), (2025, 12), "features_val_dec"),
-        (pd.Timestamp("2025-12-31"), None,       "features_predict_jan2026"),
+        (pd_core.Timestamp("2025-10-31"), (2025, 11), "features_val_nov"),
+        (pd_core.Timestamp("2025-11-30"), (2025, 12), "features_val_dec"),
+        (pd_core.Timestamp("2025-12-31"), None,       "features_predict_jan2026"),
     ]
 
     all_train_parts = []
     for cutoff, tgt, name in folds:
         feat = build_features_at_cutoff(purch, events, items, cutoff, tgt)
         out = OUTPUT_DIR / f"{name}.parquet"
-        feat.to_parquet(out, index=False)
-        log.info(f"Saved {out} [{feat.shape}]")
+        # Convert to Pandas before saving if we are in cuDF, for cross-script safety
+        if HAS_CUDF:
+            feat_pd = feat.to_pandas()
+            feat_pd.to_parquet(out, index=False)
+            log.info(f"Saved {out} (from cuDF) [{feat.shape}]")
+        else:
+            feat.to_parquet(out, index=False)
+            log.info(f"Saved {out} [{feat.shape}]")
+        
         if tgt is not None:
-            all_train_parts.append(feat)
+            if HAS_CUDF:
+                all_train_parts.append(feat_pd)
+            else:
+                all_train_parts.append(feat)
 
     # Combine train
     if all_train_parts:
