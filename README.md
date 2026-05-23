@@ -18,6 +18,12 @@ CPU: 8 cores
 RAM: 30GB+
 ```
 
+Download data on Linux:
+
+```bash
+bash download_data_gdown.sh
+```
+
 ## One-time environment setup
 
 Install basic tools:
