@@ -35,13 +35,19 @@ ITEM_COL     = CFG["TX_ITEM_COL"]
 REQUIRED_COLS = cfg_cols = CFG["SUBMISSION_COLS"]  # ["location", "item_id", "prediction"]
 
 
+def load_submission(path: Path) -> pd.DataFrame:
+    if path.suffix.lower() in {".pkl", ".pickle"}:
+        return pd.read_pickle(path)
+    return pd.read_csv(path)
+
+
 def check_submission(path: Path) -> bool:
     log.info(f"Checking submission: {path}")
     if not path.exists():
         log.error(f"File not found: {path}")
         return False
 
-    sub = pd.read_csv(path)
+    sub = load_submission(path)
 
     ok = True
     errors = []
@@ -132,14 +138,18 @@ def check_submission(path: Path) -> bool:
 
 
 if __name__ == "__main__":
-    # Check final submission by default, fallback to baseline
-    final_path    = OUTPUT_DIR / "submission_final.csv"
+    # Check final pickle submission by default, fallback to legacy CSV/baseline
+    final_path    = OUTPUT_DIR / "submission_final.pkl"
+    legacy_path   = OUTPUT_DIR / "submission_final.csv"
     baseline_path = OUTPUT_DIR / "submission_baseline.csv"
 
     if final_path.exists():
         check_submission(final_path)
+    elif legacy_path.exists():
+        log.warning("submission_final.pkl not found, checking legacy CSV instead.")
+        check_submission(legacy_path)
     elif baseline_path.exists():
-        log.warning("submission_final.csv not found, checking baseline instead.")
+        log.warning("submission_final.pkl not found, checking baseline instead.")
         check_submission(baseline_path)
     else:
         log.error("No submission file found. Run baseline.py or postprocess.py first.")

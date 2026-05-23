@@ -151,6 +151,23 @@ Monitor GPU:
 watch -n 2 nvidia-smi
 ```
 
+## Blend and final submission
+
+```bash
+micromamba activate rapids-feature
+cd ~/CS116Task2
+
+python src/blend.py
+python src/postprocess.py
+python src/check_submission.py
+```
+
+Final submission file:
+
+```text
+outputs/submission_final.pkl
+```
+
 ## Common fixes
 
 If `features.py` says cuDF is missing:

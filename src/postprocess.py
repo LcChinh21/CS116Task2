@@ -7,7 +7,7 @@ Bước 6 (tiếp): Post-processing tối ưu MAPE.
 2. Floor nhỏ → 0 nếu < threshold
 3. sale_status=0 → prediction=0
 4. Nếu không có purchase 90d nhưng có view/ATC gần đây → small prediction
-5. Xuất submission_final.csv
+5. Xuat submission_final.pkl
 """
 
 import sys
@@ -152,8 +152,8 @@ def run_postprocess():
     sub_out = sub[[LOCATION_COL, ITEM_COL, "prediction"]].drop_duplicates(
         subset=[LOCATION_COL, ITEM_COL]
     )
-    out_path = OUTPUT_DIR / "submission_final.csv"
-    sub_out.to_csv(out_path, index=False)
+    out_path = OUTPUT_DIR / "submission_final.pkl"
+    sub_out.to_pickle(out_path)
     log.info(f"Final submission saved: {out_path}")
 
     # Stats

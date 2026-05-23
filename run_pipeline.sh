@@ -36,5 +36,5 @@ python src/check_submission.py
 
 echo "======================================================================="
 echo "✅ HOÀN TẤT! File dự phóng cuối cùng để đi nộp nằm ở:"
-echo "👉 outputs/submission_final.csv"
+echo "👉 outputs/submission_final.pkl"
 echo "======================================================================="
