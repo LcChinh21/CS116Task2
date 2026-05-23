@@ -1,0 +1,81 @@
+# =============================================================================
+# Sale Forecasting Task 2 — Global Configuration
+# =============================================================================
+
+# ---- Paths (relative to repo root) ------------------------------------------
+DATA_DIR: "data/data"
+OUTPUT_DIR: "outputs"
+MODEL_DIR: "models"
+REPORT_DIR: "reports"
+
+# ---- Raw file names ---------------------------------------------------------
+TRANSACTION_FILE: "transaction_full_2025.parquet"
+EVENT_FILE: "event_full_2025.parquet"
+ITEMS_FILE: "items.parquet"
+
+# ---- Column mapping ---------------------------------------------------------
+# transaction_full_2025 columns
+TX_LOCATION_COL: "location"
+TX_ITEM_COL: "item_id"
+TX_DATE_COL: "updated_date"
+TX_QTY_COL: "quantity"
+TX_PRICE_COL: "price"
+TX_EVENT_COL: "event_type"
+TX_PURCHASE_EVENT: "Purchase"
+
+# event_full_2025 columns (no location, linked via customer_id)
+EV_ITEM_COL: "item_id"
+EV_DATE_COL: "event_date"
+EV_EVENT_COL: "event_type"
+EV_VIEW_EVENT: "view_item"
+EV_ATC_EVENT: "add_to_cart"
+EV_QTY_COL: "quantity"
+
+# items columns
+ITEM_ID_COL: "item_id"
+ITEM_SALE_STATUS_COL: "sale_status"
+ITEM_CATEGORY_COL: "category_lv1"
+ITEM_PRICE_COL: "price"
+
+# ---- Forecast target --------------------------------------------------------
+TARGET_COL: "sales_next_month"
+PREDICT_YEAR: 2026
+PREDICT_MONTH: 1      # January 2026
+
+# ---- Validation windows -----------------------------------------------------
+# Each entry: {train_end_month, val_month}  (months are 1-indexed in year 2025)
+VAL_FOLDS:
+  - train_end: "2025-10"
+    val: "2025-11"
+  - train_end: "2025-11"
+    val: "2025-12"
+
+# ---- Model ------------------------------------------------------------------
+RANDOM_STATE: 42
+DEBUG_SAMPLE: true          # set true to use 10% sample for fast iteration
+DEBUG_SAMPLE_FRAC: 0.10
+
+# LightGBM shared params
+LGBM_COMMON:
+  n_estimators: 1000
+  learning_rate: 0.05
+  num_leaves: 127
+  min_child_samples: 20
+  feature_fraction: 0.8
+  bagging_fraction: 0.8
+  bagging_freq: 1
+  reg_alpha: 0.1
+  reg_lambda: 0.1
+  verbose: -1
+  n_jobs: -1
+
+# ---- Blend weights search ---------------------------------------------------
+BLEND_GRID_STEPS: 5        # grid steps per weight (coarse grid)
+
+# ---- Post-processing --------------------------------------------------------
+CLIP_MAX_MULTIPLIER: 2.0   # max pred = CLIP_MAX_MULTIPLIER * max_90d_sales
+MIN_PREDICTION: 0.0
+FLOOR_THRESHOLD: 0.5       # predictions below this are floored to 0
+
+# ---- Submission -------------------------------------------------------------
+SUBMISSION_COLS: ["location", "item_id", "prediction"]
