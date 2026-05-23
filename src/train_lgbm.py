@@ -50,10 +50,50 @@ NON_FEATURE_COLS = {
     "sale_status",
 }
 
-LGBM_PARAMS_BASE = {
-    **CFG["LGBM_COMMON"],
-    "random_state": RANDOM_STATE,
-}
+def env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def build_lgbm_params() -> dict:
+    params = {
+        **CFG["LGBM_COMMON"],
+        "random_state": RANDOM_STATE,
+    }
+
+    gpu_cfg = CFG.get("LGBM_GPU", {}) or {}
+    use_gpu = env_flag("LGBM_USE_GPU", bool(gpu_cfg.get("enabled", False)))
+    if not use_gpu:
+        log.info("LightGBM GPU disabled. Set LGBM_USE_GPU=1 to enable GPU params.")
+        return params
+
+    gpu_params = {k: v for k, v in gpu_cfg.items() if k != "enabled" and v is not None}
+    params.update(gpu_params)
+    params["device_type"] = os.getenv("LGBM_DEVICE_TYPE", params.get("device_type", "gpu"))
+
+    int_env_overrides = {
+        "LGBM_GPU_PLATFORM_ID": "gpu_platform_id",
+        "LGBM_GPU_DEVICE_ID": "gpu_device_id",
+        "LGBM_MAX_BIN": "max_bin",
+    }
+    for env_name, param_name in int_env_overrides.items():
+        value = os.getenv(env_name)
+        if value not in (None, ""):
+            params[param_name] = int(value)
+
+    log.info(
+        "LightGBM GPU enabled: device_type=%s, gpu_platform_id=%s, gpu_device_id=%s, max_bin=%s",
+        params.get("device_type"),
+        params.get("gpu_platform_id"),
+        params.get("gpu_device_id"),
+        params.get("max_bin"),
+    )
+    return params
+
+
+LGBM_PARAMS_BASE = build_lgbm_params()
 
 
 # ---------------------------------------------------------------------------

@@ -69,6 +69,17 @@ LGBM_COMMON:
   verbose: -1
   n_jobs: -1
 
+# GPU profile for LightGBM.
+# Keep disabled by default so CPU/local runs still work. The Docker GPU runner
+# sets LGBM_USE_GPU=1 and applies these params for RTX A5000-class GPUs.
+LGBM_GPU:
+  enabled: false
+  device_type: "gpu"      # OpenCL GPU backend; works with CUDA runtime + NVIDIA driver
+  gpu_platform_id: 0
+  gpu_device_id: 0
+  max_bin: 63             # lower memory use and faster histogram construction on GPU
+  gpu_use_dp: false       # single precision keeps VRAM use low for ~20GB budgets
+
 # ---- Blend weights search ---------------------------------------------------
 BLEND_GRID_STEPS: 5        # grid steps per weight (coarse grid)
 

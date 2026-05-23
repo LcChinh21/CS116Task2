@@ -1,0 +1,38 @@
+FROM pytorch/pytorch:2.0.1-cuda11.7-cudnn8-runtime
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    ca-certificates \
+    clinfo \
+    cmake \
+    libboost-chrono-dev \
+    libboost-dev \
+    libboost-filesystem-dev \
+    libboost-system-dev \
+    ocl-icd-opencl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+COPY requirements.txt /tmp/requirements.txt
+RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel \
+    && awk 'tolower($0) !~ /^lightgbm([<=>[:space:]].*)?$/' /tmp/requirements.txt > /tmp/requirements-no-lightgbm.txt \
+    && pip install --no-cache-dir -r /tmp/requirements-no-lightgbm.txt
+
+ARG LIGHTGBM_VERSION=4.6.0
+RUN pip install --no-cache-dir --no-binary lightgbm "lightgbm==${LIGHTGBM_VERSION}" \
+    --config-settings=cmake.define.USE_GPU=ON \
+    --config-settings=cmake.define.OpenCL_INCLUDE_DIR=/usr/include \
+    --config-settings=cmake.define.OpenCL_LIBRARY=/usr/lib/x86_64-linux-gnu/libOpenCL.so
+
+ENV LGBM_USE_GPU=1 \
+    LGBM_DEVICE_TYPE=gpu \
+    LGBM_MAX_BIN=63 \
+    LGBM_GPU_PLATFORM_ID=0 \
+    LGBM_GPU_DEVICE_ID=0
+
+CMD ["python", "src/train_lgbm.py"]
