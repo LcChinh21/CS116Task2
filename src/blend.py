@@ -135,10 +135,19 @@ def grid_search_weights(val_df: pd.DataFrame, grid_steps: int = 5) -> dict:
         pred = np.clip(pred, 0, None)
 
         gt = val_df[val_df["sales_next_month"] > 0].copy()
-        gt["prediction"] = pred[gt.index]
-        gt_renamed = gt.rename(columns={"sales_next_month": "sales", "revenue_next_month": "revenue"})
-        metrics = evaluate(gt_renamed, gt.rename(columns={"prediction": "prediction"}),
-                           qty_col="sales", revenue_col="revenue")
+        gt_true = gt[[LOCATION_COL, ITEM_COL, "sales_next_month", "revenue_next_month"]].rename(
+            columns={"sales_next_month": "sales", "revenue_next_month": "revenue"}
+        )
+        gt_pred = gt[[LOCATION_COL, ITEM_COL]].copy()
+        gt_pred["prediction"] = pred.loc[gt.index]
+        metrics = evaluate(
+            gt_true,
+            gt_pred,
+            location_col=LOCATION_COL,
+            item_col=ITEM_COL,
+            qty_col="sales",
+            revenue_col="revenue",
+        )
         mape = metrics.get("mape_sales", float("inf"))
 
         if mape < best_mape:
