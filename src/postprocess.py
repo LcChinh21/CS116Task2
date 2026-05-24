@@ -7,7 +7,7 @@ Bước 6 (tiếp): Post-processing tối ưu MAPE.
 2. Floor nhỏ → 0 nếu < threshold
 3. sale_status=0 → prediction=0
 4. Nếu không có purchase 90d nhưng có view/ATC gần đây → small prediction
-5. Xuat submission_final.pkl
+5. Xuat submission_final.csv
 """
 
 import sys
@@ -168,28 +168,16 @@ def run_postprocess():
     )
     sub_out = make_portable_submission_frame(sub_out, "prediction")
 
-    # Official task-format copies: location, item_id, prediction.
+    # Official task-format copy: location, item_id, prediction.
     csv_path = OUTPUT_DIR / "submission_final.csv"
-    official_pkl_path = OUTPUT_DIR / "submission_official.pkl"
     sub_out.to_csv(csv_path, index=False)
-    sub_out.to_pickle(official_pkl_path)
 
-    # The upload portal version that submitted successfully expects quantity.
-    portal_out = sub_out.rename(columns={"prediction": "quantity"})
-    portal_out = portal_out[[LOCATION_COL, ITEM_COL, "quantity"]]
-    portal_out = make_portable_submission_frame(portal_out, "quantity")
-    pkl_path = OUTPUT_DIR / "submission_final.pkl"
-    portal_out.to_pickle(pkl_path)
-
-    log.info(f"Portal pickle saved: {pkl_path}")
     log.info(f"Official CSV saved: {csv_path}")
-    log.info(f"Official pickle copy saved: {official_pkl_path}")
 
     # Stats
     print("\n=== Final Submission Statistics ===")
     print(f"  Rows    : {len(sub_out):,}")
     print(f"  Columns : {sub_out.columns.tolist()}")
-    print(f"  Portal  : {portal_out.columns.tolist()}")
     print(f"  Min     : {sub_out['prediction'].min():.4f}")
     print(f"  Max     : {sub_out['prediction'].max():.4f}")
     print(f"  Mean    : {sub_out['prediction'].mean():.4f}")

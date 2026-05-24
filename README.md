@@ -196,15 +196,14 @@ outputs/submission_final.csv
 The optimized Task 2 submission schema is:
 
 ```text
-location, item_id, quantity
+location, item_id, prediction
 ```
 
-The actual forecast is in `quantity`.
+The actual forecast is in `prediction`.
 
 The pipeline also writes:
 
 ```text
-outputs/submission_final.pkl
 outputs/optimized_validation_results.csv
 reports/optimized_model_results.md
 ```

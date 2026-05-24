@@ -582,7 +582,7 @@ def stage_predict(cp: Checkpoints, force: bool = False) -> pd.DataFrame:
 
     if "lgbm_raw" in final_model_preds:
         raw_submission = base.save_submission(data, pred_df, final_model_preds["lgbm_raw"])
-        raw_path = base.OUTPUT_DIR / "submission_raw_only_scale_1.00.csv"
+        raw_path = base.OUTPUT_DIR / "submission_raw_only.csv"
         raw_submission.to_csv(raw_path, index=False)
         log.info("saved raw-only candidate to %s", raw_path)
 
@@ -602,7 +602,7 @@ def stage_predict(cp: Checkpoints, force: bool = False) -> pd.DataFrame:
         train_end_month=12,
     )
     control_submission = base.save_submission(data, pred_df, final_control)
-    control_path = base.OUTPUT_DIR / "submission_control_prediction_col.csv"
+    control_path = base.OUTPUT_DIR / "submission_control.csv"
     control_submission.to_csv(control_path, index=False)
     log.info("saved control candidate to %s", control_path)
 
@@ -665,15 +665,23 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--force", action="store_true", help="Rebuild checkpoints for the selected stage.")
     parser.add_argument("--no-defaults", action="store_true", help="Do not apply the built-in 20GB/4GB defaults.")
+    parser.add_argument(
+        "--profile",
+        choices=["none", "safe", "stronger"],
+        default=os.getenv("CS116_PROFILE", "safe"),
+        help="Resource profile. safe=20GB default, stronger=larger sample; env vars still take precedence.",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    apply_profile(args.profile)
     if not args.no_defaults:
         apply_defaults()
     cp = Checkpoints(Path(args.cache_dir))
     log.info("cache_dir=%s", cp.cache_dir)
+    log.info("RANDOM_STATE=%s OPT_USE_RAW_ONLY=%s", base.RANDOM_STATE, os.getenv("OPT_USE_RAW_ONLY"))
     run_stage(args.stage, cp, force=args.force)
 
 

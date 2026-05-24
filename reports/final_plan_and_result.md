@@ -140,7 +140,7 @@ Sửa `config.yaml` → `DEBUG_SAMPLE: true`
 │   ├── predictions_blended.parquet
 │   ├── feature_importance.csv
 │   ├── blend_weights.json
-│   └── submission_final.pkl
+│   └── submission_final.csv
 ├── models/
 │   ├── lgbm_poisson.txt
 │   ├── lgbm_tweedie.txt

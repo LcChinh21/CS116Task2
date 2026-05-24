@@ -850,18 +850,28 @@ def make_validation_predictions(
     pred_ensemble: np.ndarray,
     pred_baseline: Optional[np.ndarray] = None,
     pred_raw_only_postprocess: Optional[np.ndarray] = None,
+    target_month: int = 12,
 ) -> pd.DataFrame:
-    pair_ids = val_df["pair_id"].to_numpy(dtype=np.int32)
+    source_pair_ids = val_df["pair_id"].to_numpy(dtype=np.int32)
+    actual_qty = data.pair_qty[:, target_month - 1]
+    active_locs = set(data.pairs.loc[actual_qty > 0, "location_code"].astype(int).tolist())
+    eval_mask = data.pairs["location_code"].isin(active_locs) & (data.pairs["sale_status"] != 0)
+    pair_ids = data.pairs.loc[eval_mask, "pair_id"].to_numpy(dtype=np.int32)
     meta = data.pairs.iloc[pair_ids][["location", "item_id"]].reset_index(drop=True)
+
+    def align(values: np.ndarray) -> np.ndarray:
+        pred_map = pd.Series(np.clip(values, 0, None).astype("float32"), index=source_pair_ids)
+        return pred_map.reindex(pair_ids, fill_value=0).to_numpy(dtype=np.float32)
+
     result = meta.copy()
-    result["y_true"] = val_df["target"].to_numpy(dtype=np.float32)
-    result["pred_raw"] = np.clip(pred_raw, 0, None).astype("float32")
-    result["pred_log"] = np.clip(pred_log, 0, None).astype("float32")
-    result["pred_ensemble"] = np.clip(pred_ensemble, 0, None).astype("float32")
+    result["y_true"] = actual_qty[pair_ids].astype("float32")
+    result["pred_raw"] = align(pred_raw)
+    result["pred_log"] = align(pred_log)
+    result["pred_ensemble"] = align(pred_ensemble)
     if pred_baseline is not None:
-        result["pred_baseline"] = np.clip(pred_baseline, 0, None).astype("float32")
+        result["pred_baseline"] = align(pred_baseline)
     if pred_raw_only_postprocess is not None:
-        result["pred_raw_only_postprocess"] = np.clip(pred_raw_only_postprocess, 0, None).astype("float32")
+        result["pred_raw_only_postprocess"] = align(pred_raw_only_postprocess)
     return result
 
 
@@ -1108,10 +1118,8 @@ def save_submission(data: MonthlyData, pred_df: pd.DataFrame, prediction: np.nda
         submission.columns = pd.Index(["location", "item_id", "prediction"], dtype=object)
 
         csv_path = OUTPUT_DIR / "submission_final.csv"
-        pkl_path = OUTPUT_DIR / "submission_final.pkl"
         submission.to_csv(csv_path, index=False)
-        submission.to_pickle(pkl_path)
-        log.info("saved %s rows to %s and %s", len(submission), csv_path, pkl_path)
+        log.info("saved %s rows to %s", len(submission), csv_path)
         return submission
 
 

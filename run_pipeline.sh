@@ -48,5 +48,5 @@ python src/check_submission.py
 echo "======================================================================="
 echo "DONE. Submit this file:"
 echo "outputs/submission_final.csv"
-echo "Schema: location, item_id, quantity"
+echo "Schema: location, item_id, prediction"
 echo "======================================================================="

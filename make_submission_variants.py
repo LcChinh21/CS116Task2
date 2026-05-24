@@ -19,7 +19,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from src.check_submission import check_submission, make_portable_submission_frame, normalize_submission
+from src.check_submission import check_submission, make_portable_submission_frame
 
 REPO_ROOT = Path(__file__).resolve().parent
 OUTPUT_DIR = REPO_ROOT / "outputs"
@@ -63,12 +63,49 @@ def read_best_scale(scale_json: Path | None, explicit_scale: float | None) -> fl
     return 1.0
 
 
+def read_scale_payload(scale_json: Path | None) -> dict:
+    if scale_json and scale_json.exists():
+        return json.loads(scale_json.read_text(encoding="utf-8"))
+    return {}
+
+
+def write_submit_plan(
+    path: Path,
+    best_scale: float,
+    minus_scale: float,
+    plus_scale: float,
+    scale_payload: dict,
+) -> None:
+    best_mape = scale_payload.get("best_mape_quantity")
+    pred_col = scale_payload.get("pred_col", "pred_raw")
+    mape_text = f" Validation MAPE local={best_mape:.6f}." if isinstance(best_mape, (int, float)) else ""
+    lines = [
+        "# Submit Plan",
+        "",
+        "Submit exactly these 5 files today. Do not submit extra random scale variants.",
+        "",
+        "- Submit 1: outputs/submission_control.csv",
+        "  Reason: control artifact with official columns `location,item_id,prediction`.",
+        "- Submit 2: outputs/submission_raw_only.csv",
+        f"  Reason: model hypothesis; raw-only path selected from `{pred_col}` validation comparison.",
+        "- Submit 3: outputs/submission_scale_best.csv",
+        f"  Reason: best local validation scale = {best_scale:.3f}.{mape_text}",
+        "- Submit 4: outputs/submission_scale_best_minus.csv",
+        f"  Reason: one local step below best scale = {minus_scale:.3f}.",
+        "- Submit 5: outputs/submission_scale_best_plus.csv",
+        f"  Reason: one local step above best scale = {plus_scale:.3f}.",
+        "",
+        "All five files are generated from local December validation, not leaderboard probing.",
+    ]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Create validation-selected submission variants.")
-    parser.add_argument("--base", default=str(OUTPUT_DIR / "submission_final.csv"), help="Control/base submission file.")
+    parser.add_argument("--base", default=str(OUTPUT_DIR / "submission_control.csv"), help="Control/base submission file.")
     parser.add_argument(
         "--raw-only",
-        default=str(OUTPUT_DIR / "submission_raw_only_scale_1.00.csv"),
+        default=str(OUTPUT_DIR / "submission_raw_only.csv"),
         help="Raw-only submission file, if available. Falls back to --base.",
     )
     parser.add_argument("--scale-json", default=str(OUTPUT_DIR / "scale_tuning_top.json"), help="JSON from tune_scale_local.py.")
@@ -84,15 +121,18 @@ def main() -> int:
     raw_path = Path(args.raw_only)
     scale_json = Path(args.scale_json)
     output_dir = Path(args.output_dir)
-    for attr in ["base_path", "raw_path", "scale_json", "output_dir"]:
-        path = locals()[attr]
-        if not path.is_absolute():
-            locals()[attr] = REPO_ROOT / path
+    if not base_path.is_absolute():
+        base_path = REPO_ROOT / base_path
+    if not raw_path.is_absolute():
+        raw_path = REPO_ROOT / raw_path
+    if not scale_json.is_absolute():
+        scale_json = REPO_ROOT / scale_json
+    if not output_dir.is_absolute():
+        output_dir = REPO_ROOT / output_dir
 
     if not base_path.exists():
         raise FileNotFoundError(base_path)
 
-    control_tmp = output_dir / "submission_control.csv"
     if raw_path.exists():
         raw_df = load_submission(raw_path)
     else:
@@ -100,6 +140,7 @@ def main() -> int:
         raw_path = base_path
 
     control_df = load_submission(base_path)
+    scale_payload = read_scale_payload(scale_json)
     best_scale = read_best_scale(scale_json, args.best_scale)
     minus_scale = max(0.0, best_scale - args.delta)
     plus_scale = best_scale + args.delta
@@ -117,16 +158,14 @@ def main() -> int:
         path = output_dir / filename
         written.append((path, scale, write_submission(df, path, scale=scale)))
 
-    # Extra explicit names are handy when manually uploading.
-    write_submission(raw_df, output_dir / f"submission_raw_only_scale_{best_scale:.3f}.csv", scale=best_scale)
-    write_submission(raw_df, output_dir / f"submission_raw_only_scale_{minus_scale:.3f}.csv", scale=minus_scale)
-    write_submission(raw_df, output_dir / f"submission_raw_only_scale_{plus_scale:.3f}.csv", scale=plus_scale)
+    write_submit_plan(REPO_ROOT / "submit_plan.md", best_scale, minus_scale, plus_scale, scale_payload)
 
     print("\n=== Submission Variants ===")
     for path, scale, _ in written:
         print(f"{path.name}: scale={scale:.3f}")
     print(f"Raw source: {raw_path}")
     print(f"Best local scale: {best_scale:.3f}")
+    print("Submit plan: submit_plan.md")
     return 0
 
 
