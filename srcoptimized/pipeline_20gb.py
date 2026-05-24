@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import pickle
+import resource
 import sys
 import time
 from contextlib import contextmanager
@@ -62,22 +63,78 @@ DEFAULT_ENV = {
     "OPT_CATBOOST_DEPTH": "6",
     # If LightGBM GPU raises an exception, retry that model on CPU.
     "OPT_FALLBACK_CPU": "1",
+    "OPT_USE_RAW_ONLY": "1",
+}
+
+
+PROFILE_ENV = {
+    "safe": {
+        "OPT_RUN_CATBOOST": "0",
+        "OPT_MAX_TRAIN_ROWS": "1000000",
+        "OPT_MAX_FINAL_TRAIN_ROWS": "1500000",
+        "OPT_MAX_EVAL_ROWS": "500000",
+        "OPT_LGBM_TREES": "700",
+        "OPT_LGBM_LEAVES": "63",
+        "OPT_LGBM_MIN_CHILD": "80",
+        "LGBM_MAX_BIN": "31",
+        "OPT_USE_RAW_ONLY": "1",
+    },
+    "stronger": {
+        "OPT_RUN_CATBOOST": "0",
+        "OPT_MAX_TRAIN_ROWS": "1500000",
+        "OPT_MAX_FINAL_TRAIN_ROWS": "2200000",
+        "OPT_MAX_EVAL_ROWS": "600000",
+        "OPT_LGBM_TREES": "900",
+        "OPT_LGBM_LEAVES": "95",
+        "OPT_LGBM_MIN_CHILD": "80",
+        "LGBM_MAX_BIN": "31",
+        "OPT_USE_RAW_ONLY": "1",
+    },
 }
 
 
 @contextmanager
 def timer(name: str):
     start = time.perf_counter()
-    log.info("START %s", name)
+    start_rss = current_rss_mb()
+    log.info("START %s | rss=%.1f MB", name, start_rss)
     try:
         yield
     finally:
-        log.info("DONE  %s in %.1fs", name, time.perf_counter() - start)
+        end_rss = current_rss_mb()
+        log.info(
+            "DONE  %s in %.1fs | rss=%.1f MB | delta=%.1f MB",
+            name,
+            time.perf_counter() - start,
+            end_rss,
+            end_rss - start_rss,
+        )
+
+
+def current_rss_mb() -> float:
+    try:
+        with open("/proc/self/status", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return float(line.split()[1]) / 1024.0
+    except Exception:
+        pass
+    return float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) / 1024.0
 
 
 def apply_defaults() -> None:
     for key, value in DEFAULT_ENV.items():
         os.environ.setdefault(key, value)
+
+
+def apply_profile(profile: str) -> None:
+    if profile == "none":
+        return
+    if profile not in PROFILE_ENV:
+        raise ValueError(f"Unknown profile: {profile}")
+    for key, value in PROFILE_ENV[profile].items():
+        os.environ.setdefault(key, value)
+    log.info("profile=%s env=%s", profile, {key: os.getenv(key) for key in PROFILE_ENV[profile]})
 
 
 def cleanup() -> None:
@@ -113,6 +170,7 @@ class Checkpoints:
         self.val_preds = cache_dir / "validation_model_predictions.parquet"
         self.ensemble_params = cache_dir / "ensemble_params.json"
         self.post_params = cache_dir / "postprocess_params.json"
+        self.raw_post_params = cache_dir / "raw_only_postprocess_params.json"
         self.final_models = cache_dir / "final_models.pkl"
         self.status = cache_dir / "status.json"
 
@@ -129,6 +187,7 @@ class Checkpoints:
             "val_preds": self.val_preds,
             "ensemble_params": self.ensemble_params,
             "post_params": self.post_params,
+            "raw_post_params": self.raw_post_params,
             "final_models": self.final_models,
         }
 
@@ -380,14 +439,18 @@ def stage_train(cp: Checkpoints, force: bool = False):
     train_df, val_df, features = load_features(cp)
     if cp.val_models.exists() and cp.val_preds.exists() and cp.ensemble_params.exists() and cp.post_params.exists() and not force:
         log.info("reuse validation model checkpoints")
-        return
+        lgbm_val_preds = read_frame(cp.val_preds)
+    else:
+        lgbm_models, lgbm_val_preds = train_lightgbm_models_20gb(train_df, val_df, features)
+        cat_model = None
+        if base.env_flag("OPT_RUN_CATBOOST", False):
+            cat_model, cat_val_pred = base.train_catboost_if_possible(train_df, val_df, features)
+            if cat_val_pred is not None:
+                lgbm_val_preds["catboost"] = cat_val_pred
 
-    lgbm_models, lgbm_val_preds = train_lightgbm_models_20gb(train_df, val_df, features)
-    cat_model = None
-    if base.env_flag("OPT_RUN_CATBOOST", False):
-        cat_model, cat_val_pred = base.train_catboost_if_possible(train_df, val_df, features)
-        if cat_val_pred is not None:
-            lgbm_val_preds["catboost"] = cat_val_pred
+        write_pickle(cp.val_models, lgbm_models)
+        write_pickle(cp.cat_model, cat_model)
+        write_frame(cp.val_preds, lgbm_val_preds)
 
     pred_dict = {
         "baseline lag1": val_df["baseline_lag1"].to_numpy(dtype=np.float32),
@@ -404,18 +467,34 @@ def stage_train(cp: Checkpoints, force: bool = False):
     baseline_pred_val = val_df["baseline_weighted"].to_numpy(dtype=np.float32)
     ensemble_val_pred, ensemble_params = base.grid_search_ensemble(data, val_df, model_pred_val, baseline_pred_val)
     post_val_pred, post_params = base.tune_postprocess(data, val_df, ensemble_val_pred)
+    raw_post_pred, raw_post_params, safe_post_table = base.tune_safe_postprocess_options(
+        data,
+        val_df,
+        lgbm_val_preds["lgbm_raw"].to_numpy(dtype=np.float32),
+    )
     pred_dict["ensemble"] = ensemble_val_pred
     pred_dict["ensemble + postprocess"] = post_val_pred
+    pred_dict["raw_only_postprocess"] = raw_post_pred
 
     validation_table = base.make_validation_table(data, val_df, pred_dict)
     log.info("\n%s", validation_table.to_string(index=False))
     base.write_report(validation_table, ensemble_params, post_params)
+    safe_post_table.to_csv(base.OUTPUT_DIR / "postprocess_validation_results.csv", index=False)
+    base.write_validation_predictions(
+        base.make_validation_predictions(
+            data,
+            val_df,
+            pred_raw=lgbm_val_preds["lgbm_raw"].to_numpy(dtype=np.float32),
+            pred_log=lgbm_val_preds["lgbm_log"].to_numpy(dtype=np.float32),
+            pred_ensemble=ensemble_val_pred,
+            pred_baseline=baseline_pred_val,
+            pred_raw_only_postprocess=raw_post_pred,
+        )
+    )
 
-    write_pickle(cp.val_models, lgbm_models)
-    write_pickle(cp.cat_model, cat_model)
-    write_frame(cp.val_preds, lgbm_val_preds)
     cp.ensemble_params.write_text(json.dumps(ensemble_params, indent=2), encoding="utf-8")
     cp.post_params.write_text(json.dumps(post_params, indent=2), encoding="utf-8")
+    cp.raw_post_params.write_text(json.dumps(raw_post_params, indent=2), encoding="utf-8")
     save_status(cp, "train")
 
 
@@ -501,6 +580,12 @@ def stage_predict(cp: Checkpoints, force: bool = False) -> pd.DataFrame:
     if "catboost" in final_models and final_models["catboost"] is not None:
         final_model_preds["catboost"] = np.clip(final_models["catboost"].predict(pred_df[features]), 0, None).astype("float32")
 
+    if "lgbm_raw" in final_model_preds:
+        raw_submission = base.save_submission(data, pred_df, final_model_preds["lgbm_raw"])
+        raw_path = base.OUTPUT_DIR / "submission_raw_only_scale_1.00.csv"
+        raw_submission.to_csv(raw_path, index=False)
+        log.info("saved raw-only candidate to %s", raw_path)
+
     final_model_pred = base.combine_model_predictions(final_model_preds)
     final_baseline = pred_df["baseline_weighted"].to_numpy(dtype=np.float32)
     final_ensemble = np.clip(
@@ -509,13 +594,25 @@ def stage_predict(cp: Checkpoints, force: bool = False) -> pd.DataFrame:
         0,
         None,
     ).astype("float32")
-    final_pred = base.apply_postprocess_with_params(
+    final_control = base.apply_postprocess_with_params(
         data,
         pred_df["pair_id"].to_numpy(dtype=np.int32),
         final_ensemble,
         post_params,
         train_end_month=12,
     )
+    control_submission = base.save_submission(data, pred_df, final_control)
+    control_path = base.OUTPUT_DIR / "submission_control_prediction_col.csv"
+    control_submission.to_csv(control_path, index=False)
+    log.info("saved control candidate to %s", control_path)
+
+    if base.env_flag("OPT_USE_RAW_ONLY", True):
+        log.info("OPT_USE_RAW_ONLY=1: final submission uses direct LightGBM raw output")
+        final_pred = final_model_preds["lgbm_raw"]
+    else:
+        log.info("OPT_USE_RAW_ONLY=0: final submission uses ensemble + selected postprocess")
+        final_pred = final_control
+
     submission = base.save_submission(data, pred_df, final_pred)
     save_status(cp, "predict")
     return submission

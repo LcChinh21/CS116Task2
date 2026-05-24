@@ -1,23 +1,27 @@
 """
-src/check_submission.py
-=======================
-Bước 7: Kiểm tra submission trước khi nộp.
+Strict submission validator for CS116 Task 2.
 
-Kiểm tra:
-- Đúng 3 cột: location, item_id, prediction
-- Không có NaN
-- Không có prediction âm
-- Không có duplicate location × item_id
-- Top outliers
-- sale_status=0 check
+Expected upload schema:
+    location,item_id,prediction
+
+The validator intentionally fails files that still use quantity/quantity_pred
+or contain an index column. Use --normalize to write a corrected copy before
+submitting an older artifact.
 """
 
-import sys
+from __future__ import annotations
+
+import argparse
 import logging
-import yaml
-import pandas as pd
-import numpy as np
+import sys
 from pathlib import Path
+
+import numpy as np
+import pandas as pd
+try:
+    import yaml
+except Exception:  # pragma: no cover - lightweight fallback for bare Python envs.
+    yaml = None
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -25,26 +29,27 @@ log = logging.getLogger(__name__)
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-with open(REPO_ROOT / "config.yaml") as f:
-    CFG = yaml.safe_load(f)
+if yaml is not None:
+    with open(REPO_ROOT / "config.yaml", encoding="utf-8") as f:
+        CFG = yaml.safe_load(f)
+else:
+    CFG = {
+        "OUTPUT_DIR": "outputs",
+        "DATA_DIR": "data/data",
+        "ITEMS_FILE": "items.parquet",
+        "TX_LOCATION_COL": "location",
+        "TX_ITEM_COL": "item_id",
+        "ITEM_ID_COL": "item_id",
+        "ITEM_SALE_STATUS_COL": "sale_status",
+    }
 
-OUTPUT_DIR   = REPO_ROOT / CFG["OUTPUT_DIR"]
-DATA_DIR     = REPO_ROOT / CFG["DATA_DIR"]
+OUTPUT_DIR = REPO_ROOT / CFG["OUTPUT_DIR"]
+DATA_DIR = REPO_ROOT / CFG["DATA_DIR"]
 LOCATION_COL = CFG["TX_LOCATION_COL"]
-ITEM_COL     = CFG["TX_ITEM_COL"]
-OFFICIAL_COLS = CFG["SUBMISSION_COLS"]
-PORTAL_COLS = [LOCATION_COL, ITEM_COL, "quantity"]
-LEGACY_PORTAL_COLS = [LOCATION_COL, ITEM_COL, "quantity_pred"]
-
-
-def infer_submission_schema(sub: pd.DataFrame) -> tuple:
-    if "prediction" in sub.columns:
-        return OFFICIAL_COLS, "prediction"
-    if "quantity" in sub.columns:
-        return PORTAL_COLS, "quantity"
-    if "quantity_pred" in sub.columns:
-        return LEGACY_PORTAL_COLS, "quantity_pred"
-    return OFFICIAL_COLS, OFFICIAL_COLS[-1]
+ITEM_COL = CFG["TX_ITEM_COL"]
+PRED_COL = "prediction"
+OFFICIAL_COLS = [LOCATION_COL, ITEM_COL, PRED_COL]
+RENAMABLE_PRED_COLS = ["prediction", "quantity", "quantity_pred", "pred"]
 
 
 def load_submission(path: Path) -> pd.DataFrame:
@@ -53,116 +58,175 @@ def load_submission(path: Path) -> pd.DataFrame:
     return pd.read_csv(path, dtype={ITEM_COL: str})
 
 
-def check_submission(path: Path) -> bool:
-    log.info(f"Checking submission: {path}")
+def make_portable_submission_frame(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    out[LOCATION_COL] = pd.to_numeric(out[LOCATION_COL], errors="raise").astype(np.int64)
+    out[ITEM_COL] = out[ITEM_COL].astype("string[python]").astype(object)
+    out[PRED_COL] = pd.to_numeric(out[PRED_COL], errors="coerce").fillna(0).clip(lower=0).astype(np.float64)
+    out.columns = pd.Index([str(col) for col in out.columns], dtype=object)
+    return out[OFFICIAL_COLS]
+
+
+def normalize_submission(input_path: Path, output_path: Path) -> Path:
+    sub = load_submission(input_path)
+    index_cols = [col for col in sub.columns if str(col).startswith("Unnamed:")]
+    if index_cols:
+        sub = sub.drop(columns=index_cols)
+
+    pred_sources = [col for col in RENAMABLE_PRED_COLS if col in sub.columns]
+    if not pred_sources:
+        raise ValueError(f"No prediction-like column found in {input_path}. Columns={sub.columns.tolist()}")
+    pred_source = pred_sources[0]
+
+    missing_keys = [col for col in [LOCATION_COL, ITEM_COL] if col not in sub.columns]
+    if missing_keys:
+        raise ValueError(f"Missing key columns: {missing_keys}")
+
+    out = sub[[LOCATION_COL, ITEM_COL, pred_source]].rename(columns={pred_source: PRED_COL})
+    out = make_portable_submission_frame(out)
+    before = len(out)
+    out = out.drop_duplicates([LOCATION_COL, ITEM_COL], keep="first").reset_index(drop=True)
+    if len(out) != before:
+        log.warning("Dropped %s duplicate location-item rows while normalizing", before - len(out))
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if output_path.suffix.lower() in {".pkl", ".pickle"}:
+        out.to_pickle(output_path)
+    else:
+        out.to_csv(output_path, index=False)
+    log.info("Normalized %s -> %s rows=%s", input_path, output_path, len(out))
+    return output_path
+
+
+def check_submission(path: Path, strict: bool = True, check_sale_status: bool = True) -> bool:
+    log.info("Checking submission: %s", path)
     if not path.exists():
-        log.error(f"File not found: {path}")
+        log.error("File not found: %s", path)
         return False
 
     sub = load_submission(path)
-
     ok = True
-    errors = []
-    warnings_list = []
-    required_cols, pred_col = infer_submission_schema(sub)
+    errors: list[str] = []
+    warnings_list: list[str] = []
 
-    # ---- 1. Column check ---------------------------------------------------
-    missing_cols = [c for c in required_cols if c not in sub.columns]
-    if missing_cols:
-        errors.append(f"Missing columns: {missing_cols}")
-    else:
-        log.info(f"✓ All required columns present: {required_cols}")
+    columns = [str(col) for col in sub.columns]
+    if columns != OFFICIAL_COLS:
+        errors.append(f"Columns must be exactly {OFFICIAL_COLS}; got {columns}")
 
-    extra_cols = [c for c in sub.columns if c not in required_cols]
-    if extra_cols:
-        warnings_list.append(f"Extra columns (will be ignored): {extra_cols}")
+    index_cols = [col for col in columns if col.startswith("Unnamed:")]
+    if index_cols:
+        errors.append(f"Index-like columns are not allowed: {index_cols}")
 
-    if errors:
-        for e in errors:
-            log.error(f"✗ {e}")
+    if PRED_COL not in sub.columns:
+        legacy_cols = [col for col in ["quantity", "quantity_pred"] if col in sub.columns]
+        if legacy_cols:
+            errors.append(f"Rename {legacy_cols[0]} to prediction before submission")
+        else:
+            errors.append("Missing prediction column")
+
+    missing_key_cols = [col for col in [LOCATION_COL, ITEM_COL] if col not in sub.columns]
+    if missing_key_cols:
+        errors.append(f"Missing key columns: {missing_key_cols}")
+
+    if errors and strict:
+        for err in errors:
+            log.error("FAIL: %s", err)
         return False
 
-    # ---- 2. NaN check -------------------------------------------------------
-    nan_counts = sub[required_cols].isnull().sum()
-    if nan_counts.any():
-        errors.append(f"NaN values found: {nan_counts[nan_counts > 0].to_dict()}")
-    else:
-        log.info("✓ No NaN values")
+    if PRED_COL in sub.columns:
+        sub[PRED_COL] = pd.to_numeric(sub[PRED_COL], errors="coerce")
+        required_cols = [col for col in OFFICIAL_COLS if col in sub.columns]
+        nan_counts = sub[required_cols].isnull().sum()
+        if nan_counts.any():
+            errors.append(f"NaN values found: {nan_counts[nan_counts > 0].to_dict()}")
 
-    # ---- 3. Negative prediction --------------------------------------------
-    n_neg = (sub[pred_col] < 0).sum()
-    if n_neg > 0:
-        errors.append(f"Negative predictions: {n_neg}")
-    else:
-        log.info("✓ No negative predictions")
+        non_finite = ~np.isfinite(sub[PRED_COL].fillna(np.nan).to_numpy(dtype=float))
+        if non_finite.any():
+            errors.append(f"Non-finite predictions: {int(non_finite.sum())}")
 
-    # ---- 4. Duplicate check ------------------------------------------------
-    n_dup = sub.duplicated(subset=[LOCATION_COL, ITEM_COL]).sum()
-    if n_dup > 0:
-        errors.append(f"Duplicate location × item_id pairs: {n_dup}")
-    else:
-        log.info("✓ No duplicates")
+        n_neg = int((sub[PRED_COL] < 0).sum())
+        if n_neg:
+            errors.append(f"Negative predictions: {n_neg}")
 
-    # ---- 5. sale_status check -----------------------------------------------
-    try:
-        items = pd.read_parquet(DATA_DIR / CFG["ITEMS_FILE"])
-        item_status = items[[CFG["ITEM_ID_COL"], CFG["ITEM_SALE_STATUS_COL"]]].rename(
-            columns={CFG["ITEM_ID_COL"]: ITEM_COL, CFG["ITEM_SALE_STATUS_COL"]: "sale_status"}
-        )
-        sub_merged = sub.merge(item_status, on=ITEM_COL, how="left")
-        sale_zero_nonzero = sub_merged[
-            (sub_merged["sale_status"] == 0) & (sub_merged[pred_col] > 0)
-        ]
-        if len(sale_zero_nonzero) > 0:
-            warnings_list.append(f"sale_status=0 items with prediction > 0: {len(sale_zero_nonzero)}")
-        else:
-            log.info("✓ sale_status=0 items correctly have prediction=0")
-    except Exception as e:
-        warnings_list.append(f"Could not check sale_status: {e}")
+    if LOCATION_COL in sub.columns and ITEM_COL in sub.columns:
+        n_dup = int(sub.duplicated(subset=[LOCATION_COL, ITEM_COL]).sum())
+        if n_dup:
+            errors.append(f"Duplicate location-item rows: {n_dup}")
 
-    # ---- Summary -----------------------------------------------------------
+    if check_sale_status and PRED_COL in sub.columns and ITEM_COL in sub.columns:
+        try:
+            items = pd.read_parquet(DATA_DIR / CFG["ITEMS_FILE"], columns=[CFG["ITEM_ID_COL"], CFG["ITEM_SALE_STATUS_COL"]])
+            item_status = items.rename(
+                columns={CFG["ITEM_ID_COL"]: ITEM_COL, CFG["ITEM_SALE_STATUS_COL"]: "sale_status"}
+            )
+            item_status[ITEM_COL] = item_status[ITEM_COL].astype(str)
+            merged = sub.copy()
+            merged[ITEM_COL] = merged[ITEM_COL].astype(str)
+            merged = merged.merge(item_status, on=ITEM_COL, how="left")
+            sale_zero_nonzero = int(((merged["sale_status"] == 0) & (merged[PRED_COL] > 0)).sum())
+            if sale_zero_nonzero:
+                errors.append(f"sale_status=0 items with prediction > 0: {sale_zero_nonzero}")
+        except Exception as exc:
+            warnings_list.append(f"Could not check sale_status: {exc}")
+
     print("\n=== Submission Check Report ===")
-    print(f"  File          : {path}")
-    print(f"  Rows          : {len(sub):,}")
-    print(f"  Columns       : {sub.columns.tolist()}")
-    print(f"  {pred_col} min: {sub[pred_col].min():.4f}")
-    print(f"  {pred_col} max: {sub[pred_col].max():.4f}")
-    print(f"  {pred_col} mean:{sub[pred_col].mean():.4f}")
-    print(f"  Zeros         : {(sub[pred_col] == 0).sum():,}")
-    print(f"  Non-zero      : {(sub[pred_col] > 0).sum():,}")
+    print(f"  File       : {path}")
+    print(f"  Rows       : {len(sub):,}")
+    print(f"  Columns    : {columns}")
+    if PRED_COL in sub.columns:
+        print(f"  Min        : {sub[PRED_COL].min():.6f}")
+        print(f"  Max        : {sub[PRED_COL].max():.6f}")
+        print(f"  Mean       : {sub[PRED_COL].mean():.6f}")
+        print(f"  Zeros      : {(sub[PRED_COL] == 0).sum():,}")
+        print(f"  Non-zero   : {(sub[PRED_COL] > 0).sum():,}")
 
     if errors:
-        print("\n❌ ERRORS:")
-        for e in errors:
-            print(f"  - {e}")
+        print("\nERRORS:")
+        for err in errors:
+            print(f"  - {err}")
         ok = False
+
     if warnings_list:
-        print("\n⚠ WARNINGS:")
-        for w in warnings_list:
-            print(f"  - {w}")
+        print("\nWARNINGS:")
+        for warning in warnings_list:
+            print(f"  - {warning}")
 
-    print("\nTop-15 largest predictions (potential outliers):")
-    print(sub.nlargest(15, pred_col)[[LOCATION_COL, ITEM_COL, pred_col]].to_string(index=False))
+    if PRED_COL in sub.columns:
+        print("\nTop-15 largest predictions:")
+        print(sub.nlargest(15, PRED_COL)[[LOCATION_COL, ITEM_COL, PRED_COL]].to_string(index=False))
 
-    if ok and not errors:
-        print("\n✅ Submission looks valid!")
-
+    if ok:
+        print("\nSubmission looks valid.")
     return ok
 
 
-if __name__ == "__main__":
-    # Optimized pipeline writes CSV as the official submission artifact.
-    final_path    = OUTPUT_DIR / "submission_final.csv"
-    pkl_path      = OUTPUT_DIR / "submission_final.pkl"
-    baseline_path = OUTPUT_DIR / "submission_baseline.csv"
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Validate CS116 Task 2 submission CSV/PKL.")
+    parser.add_argument("path", nargs="?", default=str(OUTPUT_DIR / "submission_final.csv"), help="Submission file to validate.")
+    parser.add_argument("--normalize", action="store_true", help="Write a corrected 3-column prediction file before checking.")
+    parser.add_argument(
+        "--out",
+        default=str(OUTPUT_DIR / "submission_control_prediction_col.csv"),
+        help="Output path used with --normalize.",
+    )
+    parser.add_argument("--no-sale-status-check", action="store_true", help="Skip sale_status=0 validation.")
+    return parser.parse_args()
 
-    if final_path.exists():
-        check_submission(final_path)
-    elif pkl_path.exists():
-        log.warning("submission_final.csv not found, checking pickle copy instead.")
-        check_submission(pkl_path)
-    elif baseline_path.exists():
-        log.warning("submission_final.csv not found, checking baseline instead.")
-        check_submission(baseline_path)
-    else:
-        log.error("No submission file found. Run baseline.py or postprocess.py first.")
+
+def main() -> int:
+    args = parse_args()
+    path = Path(args.path)
+    if not path.is_absolute():
+        path = REPO_ROOT / path
+
+    if args.normalize:
+        out = Path(args.out)
+        if not out.is_absolute():
+            out = REPO_ROOT / out
+        path = normalize_submission(path, out)
+
+    return 0 if check_submission(path, strict=True, check_sale_status=not args.no_sale_status_check) else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

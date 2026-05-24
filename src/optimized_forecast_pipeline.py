@@ -21,6 +21,7 @@ import json
 import logging
 import math
 import os
+import resource
 import sys
 import time
 import warnings
@@ -46,12 +47,25 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 @contextmanager
 def timer(name: str):
     start = time.perf_counter()
-    log.info("START %s", name)
+    start_rss = current_rss_mb()
+    log.info("START %s | rss=%.1f MB", name, start_rss)
     try:
         yield
     finally:
         elapsed = time.perf_counter() - start
-        log.info("DONE  %s in %.1fs", name, elapsed)
+        end_rss = current_rss_mb()
+        log.info("DONE  %s in %.1fs | rss=%.1f MB | delta=%.1f MB", name, elapsed, end_rss, end_rss - start_rss)
+
+
+def current_rss_mb() -> float:
+    try:
+        with open("/proc/self/status", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return float(line.split()[1]) / 1024.0
+    except Exception:
+        pass
+    return float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) / 1024.0
 
 
 def env_flag(name: str, default: bool = False) -> bool:
@@ -107,7 +121,7 @@ VIEW_EVT = CFG["EV_VIEW_EVENT"]
 ATC_EVT = CFG["EV_ATC_EVENT"]
 SALE_STATUS_COL = CFG["ITEM_SALE_STATUS_COL"]
 ITEM_PRICE_COL = CFG["ITEM_PRICE_COL"]
-RANDOM_STATE = int(CFG.get("RANDOM_STATE", 42))
+RANDOM_STATE = env_int("RANDOM_STATE", int(CFG.get("RANDOM_STATE", 42)))
 EPS = 1e-6
 MONTHS = np.arange(1, 13, dtype=np.int16)
 
@@ -802,6 +816,15 @@ def score_predictions(data: MonthlyData, pair_ids: np.ndarray, prediction: np.nd
     }
 
 
+def metric_summary(y_true: np.ndarray, pred: np.ndarray) -> dict:
+    pred = np.clip(np.asarray(pred, dtype=np.float64), 0, None)
+    y_true = np.asarray(y_true, dtype=np.float64)
+    return {
+        "mae_quantity": float(np.mean(np.abs(y_true - pred))),
+        "mape_quantity": safe_mape(y_true, pred),
+    }
+
+
 def safe_mape(actual: np.ndarray, pred: np.ndarray) -> float:
     mask = actual > 0
     if mask.sum() == 0:
@@ -816,6 +839,29 @@ def make_validation_table(data: MonthlyData, val_df: pd.DataFrame, pred_cols: Di
         metrics = score_predictions(data, pair_ids, np.clip(pred, 0, None), target_month=12)
         rows.append({"model": name, **metrics})
     result = pd.DataFrame(rows).sort_values("mape_quantity")
+    return result
+
+
+def make_validation_predictions(
+    data: MonthlyData,
+    val_df: pd.DataFrame,
+    pred_raw: np.ndarray,
+    pred_log: np.ndarray,
+    pred_ensemble: np.ndarray,
+    pred_baseline: Optional[np.ndarray] = None,
+    pred_raw_only_postprocess: Optional[np.ndarray] = None,
+) -> pd.DataFrame:
+    pair_ids = val_df["pair_id"].to_numpy(dtype=np.int32)
+    meta = data.pairs.iloc[pair_ids][["location", "item_id"]].reset_index(drop=True)
+    result = meta.copy()
+    result["y_true"] = val_df["target"].to_numpy(dtype=np.float32)
+    result["pred_raw"] = np.clip(pred_raw, 0, None).astype("float32")
+    result["pred_log"] = np.clip(pred_log, 0, None).astype("float32")
+    result["pred_ensemble"] = np.clip(pred_ensemble, 0, None).astype("float32")
+    if pred_baseline is not None:
+        result["pred_baseline"] = np.clip(pred_baseline, 0, None).astype("float32")
+    if pred_raw_only_postprocess is not None:
+        result["pred_raw_only_postprocess"] = np.clip(pred_raw_only_postprocess, 0, None).astype("float32")
     return result
 
 
@@ -897,6 +943,55 @@ def tune_postprocess(data: MonthlyData, val_df: pd.DataFrame, pred: np.ndarray) 
                         best_pred = candidate.astype("float32")
         log.info("best postprocess params=%s", best)
     return best_pred, best
+
+
+def tune_safe_postprocess_options(data: MonthlyData, val_df: pd.DataFrame, pred: np.ndarray) -> Tuple[np.ndarray, dict, pd.DataFrame]:
+    pair_ids = val_df["pair_id"].to_numpy(dtype=np.int32)
+    caps = build_q99_caps(data, train_end_month=11)
+    options = [
+        ("none", "none", 1.0, 0),
+        ("global_q99", "global", 1.0, 0),
+        ("item_q99", "item", 1.0, 3),
+        ("location_q99", "location", 1.0, 3),
+    ]
+    hist = data.purchase_monthly[data.purchase_monthly["month_idx"] <= 11]
+    global_cap = float(hist["quantity"].quantile(0.99)) if not hist.empty else float("inf")
+    rows = []
+    best_name = "none"
+    best_metrics = score_predictions(data, pair_ids, pred, target_month=12)
+    best_pred = np.clip(pred, 0, None).astype("float32")
+
+    with timer("tune safe postprocess options"):
+        for name, kind, mult, min_hist in options:
+            candidate = np.clip(pred.copy(), 0, None).astype("float32")
+            if kind == "global" and np.isfinite(global_cap) and global_cap > 0:
+                candidate = np.minimum(candidate, global_cap * mult).astype("float32")
+            elif kind in {"item", "location"}:
+                pairs = data.pairs.iloc[pair_ids]
+                if kind == "item":
+                    hist_count = hist.groupby("item_code", observed=True)["quantity"].size()
+                    counts = hist_count.reindex(np.arange(data.n_items), fill_value=0).to_numpy()
+                    raw_cap = caps["item"][pairs["item_code"].to_numpy(dtype=np.int32)]
+                    enough_history = counts[pairs["item_code"].to_numpy(dtype=np.int32)] >= min_hist
+                else:
+                    hist_count = hist.groupby("location_code", observed=True)["quantity"].size()
+                    counts = hist_count.reindex(np.arange(data.n_locations), fill_value=0).to_numpy()
+                    raw_cap = caps["location"][pairs["location_code"].to_numpy(dtype=np.int32)]
+                    enough_history = counts[pairs["location_code"].to_numpy(dtype=np.int32)] >= min_hist
+                cap = np.where(enough_history & np.isfinite(raw_cap) & (raw_cap > 0), raw_cap * mult, np.inf)
+                candidate = np.minimum(candidate, cap).astype("float32")
+
+            metrics = score_predictions(data, pair_ids, candidate, target_month=12)
+            rows.append({"postprocess": name, "clip_kind": kind, "clip_mult": mult, "min_history": min_hist, **metrics})
+            if metrics["mape_quantity"] < best_metrics["mape_quantity"]:
+                best_name = name
+                best_metrics = metrics
+                best_pred = candidate
+
+    params = {"postprocess": best_name, **best_metrics}
+    table = pd.DataFrame(rows).sort_values("mape_quantity").reset_index(drop=True)
+    log.info("safe postprocess best=%s", params)
+    return best_pred, params, table
 
 
 def train_final_lgbm(train_df: pd.DataFrame, features: List[str], val_models: dict) -> dict:
@@ -1004,13 +1099,13 @@ def save_submission(data: MonthlyData, pred_df: pd.DataFrame, prediction: np.nda
         pair_ids = pred_df["pair_id"].to_numpy(dtype=np.int32)
         meta = data.pairs.iloc[pair_ids][["location", "item_id", "sale_status"]].copy()
         submission = meta[meta["sale_status"] != 0][["location", "item_id"]].copy()
-        submission["quantity"] = prediction[meta["sale_status"].to_numpy() != 0].astype("float64")
-        submission["quantity"] = submission["quantity"].clip(lower=0)
+        submission["prediction"] = prediction[meta["sale_status"].to_numpy() != 0].astype("float64")
+        submission["prediction"] = submission["prediction"].clip(lower=0)
         submission = submission.drop_duplicates(["location", "item_id"]).reset_index(drop=True)
         submission["location"] = submission["location"].astype("int64")
         submission["item_id"] = submission["item_id"].astype("string[python]").astype(object)
-        submission["quantity"] = submission["quantity"].astype("float64")
-        submission.columns = pd.Index(["location", "item_id", "quantity"], dtype=object)
+        submission["prediction"] = submission["prediction"].astype("float64")
+        submission.columns = pd.Index(["location", "item_id", "prediction"], dtype=object)
 
         csv_path = OUTPUT_DIR / "submission_final.csv"
         pkl_path = OUTPUT_DIR / "submission_final.pkl"
@@ -1046,6 +1141,13 @@ def write_report(validation_table: pd.DataFrame, ensemble_params: dict, postproc
         path.write_text("\n".join(report), encoding="utf-8")
         log.info("validation table saved to %s", validation_path)
         log.info("report saved to %s", path)
+
+
+def write_validation_predictions(validation_predictions: pd.DataFrame, path: Optional[Path] = None) -> None:
+    out_path = path or (OUTPUT_DIR / "validation_predictions.csv")
+    with timer("write wide validation predictions"):
+        validation_predictions.to_csv(out_path, index=False)
+        log.info("validation predictions saved to %s rows=%s cols=%s", out_path, len(validation_predictions), validation_predictions.shape[1])
 
 
 def run_pipeline() -> pd.DataFrame:
@@ -1085,12 +1187,30 @@ def run_pipeline() -> pd.DataFrame:
     baseline_pred_val = val_df["baseline_weighted"].to_numpy(dtype=np.float32)
     ensemble_val_pred, ensemble_params = grid_search_ensemble(data, val_df, model_pred_val, baseline_pred_val)
     post_val_pred, post_params = tune_postprocess(data, val_df, ensemble_val_pred)
+    raw_safe_post_pred, raw_safe_post_params, safe_post_table = tune_safe_postprocess_options(
+        data,
+        val_df,
+        lgbm_val_preds["lgbm_raw"].to_numpy(dtype=np.float32),
+    )
     pred_dict["ensemble"] = ensemble_val_pred
     pred_dict["ensemble + postprocess"] = post_val_pred
+    pred_dict["raw_only_postprocess"] = raw_safe_post_pred
 
     validation_table = make_validation_table(data, val_df, pred_dict)
     log.info("\n%s", validation_table.to_string(index=False))
     write_report(validation_table, ensemble_params, post_params)
+    safe_post_table.to_csv(OUTPUT_DIR / "postprocess_validation_results.csv", index=False)
+    write_validation_predictions(
+        make_validation_predictions(
+            data,
+            val_df,
+            pred_raw=lgbm_val_preds["lgbm_raw"].to_numpy(dtype=np.float32),
+            pred_log=lgbm_val_preds["lgbm_log"].to_numpy(dtype=np.float32),
+            pred_ensemble=ensemble_val_pred,
+            pred_baseline=baseline_pred_val,
+            pred_raw_only_postprocess=raw_safe_post_pred,
+        )
+    )
 
     del train_df
     cleanup()
@@ -1105,21 +1225,25 @@ def run_pipeline() -> pd.DataFrame:
 
     pred_df = build_feature_frame(data, 13, include_target=False, name="predict_jan_2026")
     final_model_preds = predict_model_dict(final_models, pred_df, features)
-    final_model_pred = combine_model_predictions(final_model_preds)
-    final_baseline = pred_df["baseline_weighted"].to_numpy(dtype=np.float32)
-    final_ensemble = np.clip(
-        (ensemble_params["alpha"] * final_model_pred + (1.0 - ensemble_params["alpha"]) * final_baseline)
-        * ensemble_params["scale"],
-        0,
-        None,
-    ).astype("float32")
-    final_pred = apply_postprocess_with_params(
-        data,
-        pred_df["pair_id"].to_numpy(dtype=np.int32),
-        final_ensemble,
-        post_params,
-        train_end_month=12,
-    )
+    if env_flag("OPT_USE_RAW_ONLY", False):
+        log.info("OPT_USE_RAW_ONLY=1: final prediction uses direct LightGBM raw output")
+        final_pred = np.clip(final_model_preds["lgbm_raw"], 0, None).astype("float32")
+    else:
+        final_model_pred = combine_model_predictions(final_model_preds)
+        final_baseline = pred_df["baseline_weighted"].to_numpy(dtype=np.float32)
+        final_ensemble = np.clip(
+            (ensemble_params["alpha"] * final_model_pred + (1.0 - ensemble_params["alpha"]) * final_baseline)
+            * ensemble_params["scale"],
+            0,
+            None,
+        ).astype("float32")
+        final_pred = apply_postprocess_with_params(
+            data,
+            pred_df["pair_id"].to_numpy(dtype=np.int32),
+            final_ensemble,
+            post_params,
+            train_end_month=12,
+        )
 
     submission = save_submission(data, pred_df, final_pred)
     log.info("Final submission columns=%s rows=%s", submission.columns.tolist(), len(submission))
