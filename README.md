@@ -157,36 +157,56 @@ Monitor GPU:
 watch -n 2 nvidia-smi
 ```
 
-## Blend and final submission
+## Optimized monthly pipeline and final submission
 
 ```bash
 micromamba activate rapids-feature
 cd ~/CS116Task2
 
-python src/blend.py
-python src/postprocess.py
-python src/check_submission.py
+bash run_pipeline.sh
 ```
+
+`run_pipeline.sh` now enables GPU-first defaults:
+
+```bash
+LGBM_USE_GPU=1
+LGBM_DEVICE_TYPE=gpu
+LGBM_GPU_PLATFORM_ID=0
+LGBM_GPU_DEVICE_ID=0
+LGBM_MAX_BIN=63
+LGBM_GPU_USE_DP=0
+OPT_CATBOOST_USE_GPU=1
+OPT_CATBOOST_DEVICES=0
+```
+
+For a faster/lower-memory GPU run, disable CatBoost or sample training rows:
+
+```bash
+OPT_RUN_CATBOOST=0 OPT_MAX_TRAIN_ROWS=3000000 bash run_pipeline.sh
+```
+
+If LightGBM reports that GPU Tree Learner was not enabled, rebuild LightGBM with GPU support as described below.
 
 Final submission file:
 
 ```text
+outputs/submission_final.csv
+```
+
+The optimized Task 2 submission schema is:
+
+```text
+location, item_id, quantity
+```
+
+The actual forecast is in `quantity`.
+
+The pipeline also writes:
+
+```text
 outputs/submission_final.pkl
-```
-
-The upload portal currently expects the pickle schema:
-
-```text
-location, item_id, quantity_pred
-```
-
-The actual forecast is in `quantity_pred`.
-
-Official task-format copies are also written:
-
-```text
-outputs/submission_final.csv      # location, item_id, prediction
-outputs/submission_official.pkl   # location, item_id, prediction
+outputs/optimized_validation_results.csv
+reports/optimized_model_results.md
 ```
 
 ## Common fixes

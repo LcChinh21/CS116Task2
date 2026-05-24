@@ -1,40 +1,52 @@
 #!/bin/bash
 # =========================================================================
-# KAGGLE SALES FORECASTING TASK 2 - FULL PIPELINE RUNNER
+# CS116 Task 2 - optimized monthly sale forecasting pipeline
 # =========================================================================
-# Yêu cầu: 
-# - Cấu hình khuyên dùng: GPU RTX A5000 24GB (hoặc tương đương), RAM > 20GB.
-# - File config.yaml đã set DEBUG_SAMPLE: false để chạy full dữ liệu.
+# Main split:
+# - Train: 2025-01 .. 2025-11 features/targets
+# - Validation: 2025-12
+# - Final train: 2025-01 .. 2025-12
+# - Predict: 2026-01
+#
+# Useful notebook/debug knobs:
+#   OPT_MAX_ROW_GROUPS=2      # read only a few parquet row groups
+#   OPT_MAX_TRAIN_ROWS=3000000
+#   OPT_RUN_CATBOOST=0
 # =========================================================================
 
-set -e  # Dừng script ngay lập tức nếu có bất kì bước nào văng lỗi (như OOM)
+set -e
 
-echo "🚀 [1/8] Đang khởi tạo môi trường và kiểm tra thư viện..."
+# GPU-first defaults. Override any of these before calling the script if the
+# current notebook/kernel uses a different device setup.
+export LGBM_USE_GPU="${LGBM_USE_GPU:-1}"
+export LGBM_DEVICE_TYPE="${LGBM_DEVICE_TYPE:-gpu}"
+export LGBM_GPU_PLATFORM_ID="${LGBM_GPU_PLATFORM_ID:-0}"
+export LGBM_GPU_DEVICE_ID="${LGBM_GPU_DEVICE_ID:-0}"
+export LGBM_MAX_BIN="${LGBM_MAX_BIN:-63}"
+export LGBM_GPU_USE_DP="${LGBM_GPU_USE_DP:-0}"
+
+export OPT_RUN_CATBOOST="${OPT_RUN_CATBOOST:-1}"
+export OPT_CATBOOST_USE_GPU="${OPT_CATBOOST_USE_GPU:-1}"
+export OPT_CATBOOST_DEVICES="${OPT_CATBOOST_DEVICES:-0}"
+
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
+export OPT_N_JOBS="${OPT_N_JOBS:--1}"
+
+echo "[1/3] Installing dependencies..."
 pip install -r requirements.txt -q
 
-echo "📊 [2/8] Chạy Data Audit (Kiểm tra dữ liệu chuẩn bị)..."
-python src/data_audit.py
+echo "GPU config:"
+echo "  LightGBM: use_gpu=${LGBM_USE_GPU}, device_type=${LGBM_DEVICE_TYPE}, platform=${LGBM_GPU_PLATFORM_ID}, device=${LGBM_GPU_DEVICE_ID}, max_bin=${LGBM_MAX_BIN}"
+echo "  CatBoost: run=${OPT_RUN_CATBOOST}, use_gpu=${OPT_CATBOOST_USE_GPU}, devices=${OPT_CATBOOST_DEVICES}"
 
-echo "📈 [3/8] Sinh file Baseline Prediction..."
-python src/baseline.py
+echo "[2/3] Running optimized monthly forecast pipeline..."
+python src/optimized_forecast_pipeline.py
 
-echo "⏱️  [4/8] Chạy Validation đánh giá cho Baseline..."
-python src/validation.py
-
-echo "🧠 [5/8] Feature Engineering (Bước nặng nhất - đang đẩy vào cuDF/Pandas)..."
-python src/features.py
-
-echo "🤖 [6/8] Train các mô hình LightGBM (Chạy GPU nếu có config)..."
-python src/train_lgbm.py
-
-echo "🧪 [7/8] Tìm hệ số Blend tốt nhất và trộn kết quả mô hình..."
-python src/blend.py
-
-echo "🧹 [8/8] Sàng lọc Post-processing và kiểm tra luật lệ Submisison..."
-python src/postprocess.py
+echo "[3/3] Checking final submission..."
 python src/check_submission.py
 
 echo "======================================================================="
-echo "✅ HOÀN TẤT! File dự phóng cuối cùng để đi nộp nằm ở:"
-echo "👉 outputs/submission_final.pkl"
+echo "DONE. Submit this file:"
+echo "outputs/submission_final.csv"
+echo "Schema: location, item_id, quantity"
 echo "======================================================================="

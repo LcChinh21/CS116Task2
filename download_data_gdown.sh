@@ -20,11 +20,11 @@ python -m pip install -q --upgrade gdown
 
 echo "[3/4] Downloading data files to ${DATA_DIR}..."
 mkdir -p "${DATA_DIR}"
-gdown --folder "${DATA_FOLDER_ID}" -O "${DATA_DIR}" --remaining-ok
+gdown --folder "${DATA_FOLDER_ID}" -O "${DATA_DIR}"
 
 echo "[4/4] Downloading cached outputs to ${OUTPUT_DIR}..."
 mkdir -p "${OUTPUT_DIR}"
-gdown --folder "${OUTPUTS_FOLDER_ID}" -O "${OUTPUT_DIR}" --remaining-ok
+gdown --folder "${OUTPUTS_FOLDER_ID}" -O "${OUTPUT_DIR}"
 
 echo
 echo "Download complete."

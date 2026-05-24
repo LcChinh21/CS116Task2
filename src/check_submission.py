@@ -33,21 +33,24 @@ DATA_DIR     = REPO_ROOT / CFG["DATA_DIR"]
 LOCATION_COL = CFG["TX_LOCATION_COL"]
 ITEM_COL     = CFG["TX_ITEM_COL"]
 OFFICIAL_COLS = CFG["SUBMISSION_COLS"]
-PORTAL_COLS = [LOCATION_COL, ITEM_COL, "quantity_pred"]
+PORTAL_COLS = [LOCATION_COL, ITEM_COL, "quantity"]
+LEGACY_PORTAL_COLS = [LOCATION_COL, ITEM_COL, "quantity_pred"]
 
 
 def infer_submission_schema(sub: pd.DataFrame) -> tuple:
     if "prediction" in sub.columns:
         return OFFICIAL_COLS, "prediction"
+    if "quantity" in sub.columns:
+        return PORTAL_COLS, "quantity"
     if "quantity_pred" in sub.columns:
-        return PORTAL_COLS, "quantity_pred"
+        return LEGACY_PORTAL_COLS, "quantity_pred"
     return OFFICIAL_COLS, OFFICIAL_COLS[-1]
 
 
 def load_submission(path: Path) -> pd.DataFrame:
     if path.suffix.lower() in {".pkl", ".pickle"}:
         return pd.read_pickle(path)
-    return pd.read_csv(path)
+    return pd.read_csv(path, dtype={ITEM_COL: str})
 
 
 def check_submission(path: Path) -> bool:
@@ -68,7 +71,7 @@ def check_submission(path: Path) -> bool:
     if missing_cols:
         errors.append(f"Missing columns: {missing_cols}")
     else:
-        log.info("✓ All required columns present: location, item_id, prediction")
+        log.info(f"✓ All required columns present: {required_cols}")
 
     extra_cols = [c for c in sub.columns if c not in required_cols]
     if extra_cols:
@@ -148,18 +151,18 @@ def check_submission(path: Path) -> bool:
 
 
 if __name__ == "__main__":
-    # Check final pickle submission by default, fallback to legacy CSV/baseline
-    final_path    = OUTPUT_DIR / "submission_final.pkl"
-    legacy_path   = OUTPUT_DIR / "submission_final.csv"
+    # Optimized pipeline writes CSV as the official submission artifact.
+    final_path    = OUTPUT_DIR / "submission_final.csv"
+    pkl_path      = OUTPUT_DIR / "submission_final.pkl"
     baseline_path = OUTPUT_DIR / "submission_baseline.csv"
 
     if final_path.exists():
         check_submission(final_path)
-    elif legacy_path.exists():
-        log.warning("submission_final.pkl not found, checking legacy CSV instead.")
-        check_submission(legacy_path)
+    elif pkl_path.exists():
+        log.warning("submission_final.csv not found, checking pickle copy instead.")
+        check_submission(pkl_path)
     elif baseline_path.exists():
-        log.warning("submission_final.pkl not found, checking baseline instead.")
+        log.warning("submission_final.csv not found, checking baseline instead.")
         check_submission(baseline_path)
     else:
         log.error("No submission file found. Run baseline.py or postprocess.py first.")

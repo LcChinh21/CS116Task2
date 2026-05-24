@@ -37,6 +37,20 @@ FLOOR_THR    = CFG.get("FLOOR_THRESHOLD", 0.5)
 EPS          = 1e-6
 
 
+def make_portable_submission_frame(df: pd.DataFrame, pred_col: str) -> pd.DataFrame:
+    """
+    Keep pickle submissions compatible with upload environments that do not
+    have pyarrow installed. Pandas 3 can preserve Arrow-backed string columns
+    from parquet, and those pickles fail to unpickle without pyarrow.
+    """
+    out = df.copy()
+    out[LOCATION_COL] = out[LOCATION_COL].astype(np.int64)
+    out[ITEM_COL] = out[ITEM_COL].astype("string[python]").astype(object)
+    out[pred_col] = out[pred_col].astype(np.float64)
+    out.columns = pd.Index([str(col) for col in out.columns], dtype=object)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Compute max 90d historical sales per location × item
 # ---------------------------------------------------------------------------
@@ -152,22 +166,24 @@ def run_postprocess():
     sub_out = sub[[LOCATION_COL, ITEM_COL, "prediction"]].drop_duplicates(
         subset=[LOCATION_COL, ITEM_COL]
     )
+    sub_out = make_portable_submission_frame(sub_out, "prediction")
 
-    # Official task format from the statement: location, item_id, prediction.
+    # Official task-format copies: location, item_id, prediction.
     csv_path = OUTPUT_DIR / "submission_final.csv"
     official_pkl_path = OUTPUT_DIR / "submission_official.pkl"
     sub_out.to_csv(csv_path, index=False)
     sub_out.to_pickle(official_pkl_path)
 
-    # The current upload portal expects quantity_pred in the pickle.
-    portal_out = sub_out.rename(columns={"prediction": "quantity_pred"})
-    portal_out = portal_out[[LOCATION_COL, ITEM_COL, "quantity_pred"]]
+    # The upload portal version that submitted successfully expects quantity.
+    portal_out = sub_out.rename(columns={"prediction": "quantity"})
+    portal_out = portal_out[[LOCATION_COL, ITEM_COL, "quantity"]]
+    portal_out = make_portable_submission_frame(portal_out, "quantity")
     pkl_path = OUTPUT_DIR / "submission_final.pkl"
     portal_out.to_pickle(pkl_path)
 
     log.info(f"Portal pickle saved: {pkl_path}")
     log.info(f"Official CSV saved: {csv_path}")
-    log.info(f"Official pickle saved: {official_pkl_path}")
+    log.info(f"Official pickle copy saved: {official_pkl_path}")
 
     # Stats
     print("\n=== Final Submission Statistics ===")
