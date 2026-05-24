@@ -187,19 +187,19 @@ OPT_RUN_CATBOOST=0 OPT_MAX_TRAIN_ROWS=3000000 bash run_pipeline.sh
 
 If LightGBM reports that GPU Tree Learner was not enabled, rebuild LightGBM with GPU support as described below.
 
-Final submission file:
+Final portal submission file:
 
 ```text
-outputs/submission_final.csv
+outputs/submission_final.pkl
 ```
 
-The optimized Task 2 submission schema is:
+The portal pickle schema is:
 
 ```text
-location, item_id, prediction
+location, item_id, quantity
 ```
 
-The actual forecast is in `prediction`.
+The pipeline also keeps a CSV debug copy with `location,item_id,prediction`.
 
 The pipeline also writes:
 

@@ -7,7 +7,7 @@ Bước 6 (tiếp): Post-processing tối ưu MAPE.
 2. Floor nhỏ → 0 nếu < threshold
 3. sale_status=0 → prediction=0
 4. Nếu không có purchase 90d nhưng có view/ATC gần đây → small prediction
-5. Xuat submission_final.csv
+5. Xuat submission_final.pkl
 """
 
 import sys
@@ -168,11 +168,18 @@ def run_postprocess():
     )
     sub_out = make_portable_submission_frame(sub_out, "prediction")
 
-    # Official task-format copy: location, item_id, prediction.
+    # Official task-format copies: location, item_id, prediction.
     csv_path = OUTPUT_DIR / "submission_final.csv"
+    pkl_path = OUTPUT_DIR / "submission_final.pkl"
     sub_out.to_csv(csv_path, index=False)
+    portal_out = sub_out.rename(columns={"prediction": "quantity"})
+    portal_out[ITEM_COL] = pd.to_numeric(portal_out[ITEM_COL], errors="raise").astype(np.int64)
+    portal_out["quantity"] = portal_out["quantity"].astype(np.float64)
+    portal_out = portal_out[[LOCATION_COL, ITEM_COL, "quantity"]]
+    portal_out.to_pickle(pkl_path)
 
     log.info(f"Official CSV saved: {csv_path}")
+    log.info(f"Official pickle saved: {pkl_path}")
 
     # Stats
     print("\n=== Final Submission Statistics ===")

@@ -1118,8 +1118,14 @@ def save_submission(data: MonthlyData, pred_df: pd.DataFrame, prediction: np.nda
         submission.columns = pd.Index(["location", "item_id", "prediction"], dtype=object)
 
         csv_path = OUTPUT_DIR / "submission_final.csv"
+        pkl_path = OUTPUT_DIR / "submission_final.pkl"
         submission.to_csv(csv_path, index=False)
-        log.info("saved %s rows to %s", len(submission), csv_path)
+        portal_submission = submission.rename(columns={"prediction": "quantity"})
+        portal_submission["item_id"] = pd.to_numeric(portal_submission["item_id"], errors="raise").astype("int64")
+        portal_submission["quantity"] = portal_submission["quantity"].astype("float64")
+        portal_submission = portal_submission[["location", "item_id", "quantity"]]
+        portal_submission.to_pickle(pkl_path)
+        log.info("saved %s rows to %s and %s", len(submission), csv_path, pkl_path)
         return submission
 
 

@@ -49,6 +49,7 @@ LOCATION_COL = CFG["TX_LOCATION_COL"]
 ITEM_COL = CFG["TX_ITEM_COL"]
 PRED_COL = "prediction"
 OFFICIAL_COLS = [LOCATION_COL, ITEM_COL, PRED_COL]
+PORTAL_PKL_COLS = [LOCATION_COL, ITEM_COL, "quantity"]
 RENAMABLE_PRED_COLS = ["prediction", "quantity", "quantity_pred", "pred"]
 
 
@@ -98,7 +99,13 @@ def normalize_submission(input_path: Path, output_path: Path) -> Path:
     return output_path
 
 
-def check_submission(path: Path, strict: bool = True, check_sale_status: bool = True) -> bool:
+def expected_schema(path: Path, portal_pickle: bool = False) -> tuple[list[str], str]:
+    if portal_pickle or path.suffix.lower() in {".pkl", ".pickle"}:
+        return PORTAL_PKL_COLS, "quantity"
+    return OFFICIAL_COLS, PRED_COL
+
+
+def check_submission(path: Path, strict: bool = True, check_sale_status: bool = True, portal_pickle: bool = False) -> bool:
     log.info("Checking submission: %s", path)
     if not path.exists():
         log.error("File not found: %s", path)
@@ -110,19 +117,20 @@ def check_submission(path: Path, strict: bool = True, check_sale_status: bool = 
     warnings_list: list[str] = []
 
     columns = [str(col) for col in sub.columns]
-    if columns != OFFICIAL_COLS:
-        errors.append(f"Columns must be exactly {OFFICIAL_COLS}; got {columns}")
+    required_cols, pred_col = expected_schema(path, portal_pickle=portal_pickle)
+    if columns != required_cols:
+        errors.append(f"Columns must be exactly {required_cols}; got {columns}")
 
     index_cols = [col for col in columns if col.startswith("Unnamed:")]
     if index_cols:
         errors.append(f"Index-like columns are not allowed: {index_cols}")
 
-    if PRED_COL not in sub.columns:
-        legacy_cols = [col for col in ["quantity", "quantity_pred"] if col in sub.columns]
+    if pred_col not in sub.columns:
+        legacy_cols = [col for col in ["prediction", "quantity", "quantity_pred"] if col in sub.columns]
         if legacy_cols:
-            errors.append(f"Rename {legacy_cols[0]} to prediction before submission")
+            errors.append(f"Rename {legacy_cols[0]} to {pred_col} before submission")
         else:
-            errors.append("Missing prediction column")
+            errors.append(f"Missing {pred_col} column")
 
     missing_key_cols = [col for col in [LOCATION_COL, ITEM_COL] if col not in sub.columns]
     if missing_key_cols:
@@ -133,18 +141,18 @@ def check_submission(path: Path, strict: bool = True, check_sale_status: bool = 
             log.error("FAIL: %s", err)
         return False
 
-    if PRED_COL in sub.columns:
-        sub[PRED_COL] = pd.to_numeric(sub[PRED_COL], errors="coerce")
-        required_cols = [col for col in OFFICIAL_COLS if col in sub.columns]
-        nan_counts = sub[required_cols].isnull().sum()
+    if pred_col in sub.columns:
+        sub[pred_col] = pd.to_numeric(sub[pred_col], errors="coerce")
+        present_required_cols = [col for col in required_cols if col in sub.columns]
+        nan_counts = sub[present_required_cols].isnull().sum()
         if nan_counts.any():
             errors.append(f"NaN values found: {nan_counts[nan_counts > 0].to_dict()}")
 
-        non_finite = ~np.isfinite(sub[PRED_COL].fillna(np.nan).to_numpy(dtype=float))
+        non_finite = ~np.isfinite(sub[pred_col].fillna(np.nan).to_numpy(dtype=float))
         if non_finite.any():
             errors.append(f"Non-finite predictions: {int(non_finite.sum())}")
 
-        n_neg = int((sub[PRED_COL] < 0).sum())
+        n_neg = int((sub[pred_col] < 0).sum())
         if n_neg:
             errors.append(f"Negative predictions: {n_neg}")
 
@@ -153,7 +161,7 @@ def check_submission(path: Path, strict: bool = True, check_sale_status: bool = 
         if n_dup:
             errors.append(f"Duplicate location-item rows: {n_dup}")
 
-    if check_sale_status and PRED_COL in sub.columns and ITEM_COL in sub.columns:
+    if check_sale_status and pred_col in sub.columns and ITEM_COL in sub.columns:
         try:
             items = pd.read_parquet(DATA_DIR / CFG["ITEMS_FILE"], columns=[CFG["ITEM_ID_COL"], CFG["ITEM_SALE_STATUS_COL"]])
             item_status = items.rename(
@@ -163,7 +171,7 @@ def check_submission(path: Path, strict: bool = True, check_sale_status: bool = 
             merged = sub.copy()
             merged[ITEM_COL] = merged[ITEM_COL].astype(str)
             merged = merged.merge(item_status, on=ITEM_COL, how="left")
-            sale_zero_nonzero = int(((merged["sale_status"] == 0) & (merged[PRED_COL] > 0)).sum())
+            sale_zero_nonzero = int(((merged["sale_status"] == 0) & (merged[pred_col] > 0)).sum())
             if sale_zero_nonzero:
                 errors.append(f"sale_status=0 items with prediction > 0: {sale_zero_nonzero}")
         except Exception as exc:
@@ -173,12 +181,12 @@ def check_submission(path: Path, strict: bool = True, check_sale_status: bool = 
     print(f"  File       : {path}")
     print(f"  Rows       : {len(sub):,}")
     print(f"  Columns    : {columns}")
-    if PRED_COL in sub.columns:
-        print(f"  Min        : {sub[PRED_COL].min():.6f}")
-        print(f"  Max        : {sub[PRED_COL].max():.6f}")
-        print(f"  Mean       : {sub[PRED_COL].mean():.6f}")
-        print(f"  Zeros      : {(sub[PRED_COL] == 0).sum():,}")
-        print(f"  Non-zero   : {(sub[PRED_COL] > 0).sum():,}")
+    if pred_col in sub.columns:
+        print(f"  Min        : {sub[pred_col].min():.6f}")
+        print(f"  Max        : {sub[pred_col].max():.6f}")
+        print(f"  Mean       : {sub[pred_col].mean():.6f}")
+        print(f"  Zeros      : {(sub[pred_col] == 0).sum():,}")
+        print(f"  Non-zero   : {(sub[pred_col] > 0).sum():,}")
 
     if errors:
         print("\nERRORS:")
@@ -191,9 +199,9 @@ def check_submission(path: Path, strict: bool = True, check_sale_status: bool = 
         for warning in warnings_list:
             print(f"  - {warning}")
 
-    if PRED_COL in sub.columns:
+    if pred_col in sub.columns:
         print("\nTop-15 largest predictions:")
-        print(sub.nlargest(15, PRED_COL)[[LOCATION_COL, ITEM_COL, PRED_COL]].to_string(index=False))
+        print(sub.nlargest(15, pred_col)[[LOCATION_COL, ITEM_COL, pred_col]].to_string(index=False))
 
     if ok:
         print("\nSubmission looks valid.")
@@ -210,6 +218,7 @@ def parse_args() -> argparse.Namespace:
         help="Output path used with --normalize.",
     )
     parser.add_argument("--no-sale-status-check", action="store_true", help="Skip sale_status=0 validation.")
+    parser.add_argument("--official-csv", action="store_true", help="Require location,item_id,prediction even for pickle files.")
     return parser.parse_args()
 
 
@@ -225,7 +234,8 @@ def main() -> int:
             out = REPO_ROOT / out
         path = normalize_submission(path, out)
 
-    return 0 if check_submission(path, strict=True, check_sale_status=not args.no_sale_status_check) else 1
+    portal_pickle = path.suffix.lower() in {".pkl", ".pickle"} and not args.official_csv
+    return 0 if check_submission(path, strict=True, check_sale_status=not args.no_sale_status_check, portal_pickle=portal_pickle) else 1
 
 
 if __name__ == "__main__":
