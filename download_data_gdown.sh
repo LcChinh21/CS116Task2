@@ -13,10 +13,22 @@ DATA_DIR="data/data"
 OUTPUT_DIR="outputs"
 
 echo "[1/4] Checking Python..."
-python --version >/dev/null
+if command -v python3 >/dev/null 2>&1; then
+  PYTHON_BIN="python3"
+elif command -v python >/dev/null 2>&1; then
+  PYTHON_BIN="python"
+else
+  echo "Python is required but was not found on PATH." >&2
+  exit 1
+fi
+"${PYTHON_BIN}" --version >/dev/null
+if ! "${PYTHON_BIN}" -m pip --version >/dev/null 2>&1; then
+  echo "pip is required for ${PYTHON_BIN} but was not found." >&2
+  exit 1
+fi
 
 echo "[2/4] Installing/updating gdown..."
-python -m pip install -q --upgrade gdown
+"${PYTHON_BIN}" -m pip install -q --upgrade gdown
 
 echo "[3/4] Downloading data files to ${DATA_DIR}..."
 mkdir -p "${DATA_DIR}"
