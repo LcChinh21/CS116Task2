@@ -428,6 +428,21 @@ def cpu_params(params: dict) -> dict:
     return cpu
 
 
+def lgbm_categorical_features(params: dict, features: List[str]) -> List[str]:
+    categorical = [col for col in ["location_code", "item_code", "category_code", "brand_code"] if col in features]
+    if params.get("device_type") == "gpu" and not base.env_flag("OPT_LGBM_GPU_CATEGORICAL", False):
+        raw_cols = os.getenv("OPT_LGBM_GPU_CATEGORICAL_COLS", "category_code").strip()
+        gpu_categorical = [col.strip() for col in raw_cols.split(",") if col.strip() in features]
+        skipped = [col for col in categorical if col not in gpu_categorical]
+        log.info(
+            "LightGBM GPU categorical features=%s; high-cardinality encoded ids treated as numeric bins=%s",
+            gpu_categorical,
+            skipped,
+        )
+        return gpu_categorical
+    return categorical
+
+
 def predict_in_chunks(model, frame: pd.DataFrame, features: List[str], log_target: bool = False) -> np.ndarray:
     chunk_rows = base.env_int("OPT_PRED_CHUNK_ROWS", 250_000)
     chunks: List[np.ndarray] = []
@@ -476,7 +491,6 @@ def train_lightgbm_models_20gb(train_df: pd.DataFrame, val_df: pd.DataFrame, fea
         weights = sample_weights_for_mode(y_train, weight_mode)
         eval_weights = sample_weights_for_mode(y_eval, weight_mode)
         log.info("OPT_WEIGHT_MODE=%s", weight_mode)
-        categorical = [col for col in ["location_code", "item_code", "category_code", "brand_code"] if col in features]
         callbacks = [lgb.early_stopping(base.env_int("OPT_EARLY_STOPPING", 50), verbose=False), lgb.log_evaluation(period=100)]
         eval_args = {
             "eval_set": [(X_eval, y_eval)],
@@ -486,6 +500,7 @@ def train_lightgbm_models_20gb(train_df: pd.DataFrame, val_df: pd.DataFrame, fea
         if eval_weights is not None:
             eval_args["eval_sample_weight"] = [eval_weights]
         params = lgbm_params()
+        categorical = lgbm_categorical_features(params, features)
 
         raw_model = fit_lgbm_model(params, "regression_l1", X_train, y_train, weights, categorical, eval_args)
 
@@ -617,7 +632,8 @@ def train_final_lgbm_20gb(train_df: pd.DataFrame, features: List[str], val_model
         weight_mode = weight_mode_from_env()
         weights = sample_weights_for_mode(y_train, weight_mode)
         log.info("final OPT_WEIGHT_MODE=%s", weight_mode)
-        categorical = [col for col in ["location_code", "item_code", "category_code", "brand_code"] if col in features]
+        params_probe = lgbm_params()
+        categorical = lgbm_categorical_features(params_probe, features)
         final_models = {}
         for name, target_values, objective in [
             ("lgbm_raw", y_train, "regression_l1"),
@@ -627,6 +643,8 @@ def train_final_lgbm_20gb(train_df: pd.DataFrame, features: List[str], val_model
             n_estimators = int(getattr(source, "best_iteration_", None) or getattr(source, "n_estimators", 500))
             params = source.get_params()
             params.update({"n_estimators": max(50, n_estimators), "objective": objective})
+            if params.get("device_type") == "gpu":
+                categorical = lgbm_categorical_features(params, features)
             model = fit_lgbm_model(params, objective, X_train, target_values, weights, categorical, eval_args={})
             final_models[name] = model
             model.booster_.save_model(str(base.MODEL_DIR / f"optimized_{name}.txt"))

@@ -568,6 +568,21 @@ def build_feature_frame(
         features["purchase_to_atc_roll3"] = (
             features["item_qty_roll_mean_3"] / (features["add_to_cart_roll_mean_3"] + 1.0)
         ).astype("float32")
+        if env_flag("OPT_EVENT_FEATURE_EXTRAS", False):
+            for lag in (1, 2, 3):
+                features[f"item_view_lag{lag}"] = features[f"view_item_lag{lag}"].astype("float32")
+                features[f"item_atc_lag{lag}"] = features[f"add_to_cart_lag{lag}"].astype("float32")
+            features["item_view_roll3"] = features["view_item_roll_mean_3"].astype("float32")
+            features["item_atc_roll3"] = features["add_to_cart_roll_mean_3"].astype("float32")
+            features["item_atc_per_view"] = (
+                features["item_atc_roll3"] / (features["item_view_roll3"] + 1.0)
+            ).astype("float32")
+            features["item_purchase_per_view"] = (
+                features["item_qty_roll_mean_3"] / (features["item_view_roll3"] + 1.0)
+            ).astype("float32")
+            features["item_purchase_per_atc"] = (
+                features["item_qty_roll_mean_3"] / (features["item_atc_roll3"] + 1.0)
+            ).astype("float32")
 
         frame = pd.DataFrame(features)
         frame["baseline_lag1"] = frame["li_qty_lag1"].astype("float32")
@@ -696,6 +711,16 @@ def train_lightgbm_models(train_df: pd.DataFrame, val_df: pd.DataFrame, features
             log.info("LightGBM GPU disabled; set LGBM_USE_GPU=1 to enable it.")
 
         categorical = [col for col in ["location_code", "item_code", "category_code", "brand_code"] if col in features]
+        if base_params.get("device_type") == "gpu" and not env_flag("OPT_LGBM_GPU_CATEGORICAL", False):
+            raw_cols = os.getenv("OPT_LGBM_GPU_CATEGORICAL_COLS", "category_code").strip()
+            gpu_categorical = [col.strip() for col in raw_cols.split(",") if col.strip() in features]
+            skipped = [col for col in categorical if col not in gpu_categorical]
+            log.info(
+                "LightGBM GPU categorical features=%s; high-cardinality encoded ids treated as numeric bins=%s",
+                gpu_categorical,
+                skipped,
+            )
+            categorical = gpu_categorical
         callbacks = [lgb.early_stopping(env_int("OPT_EARLY_STOPPING", 100), verbose=False), lgb.log_evaluation(period=100)]
 
         raw_model = lgb.LGBMRegressor(objective="regression_l1", **base_params)
@@ -1024,6 +1049,16 @@ def train_final_lgbm(train_df: pd.DataFrame, features: List[str], val_models: di
             n_estimators = int(getattr(source, "best_iteration_", None) or getattr(source, "n_estimators", 1000))
             params = source.get_params()
             params.update({"n_estimators": max(50, n_estimators), "objective": objective})
+            if params.get("device_type") == "gpu" and not env_flag("OPT_LGBM_GPU_CATEGORICAL", False):
+                raw_cols = os.getenv("OPT_LGBM_GPU_CATEGORICAL_COLS", "category_code").strip()
+                gpu_categorical = [col.strip() for col in raw_cols.split(",") if col.strip() in features]
+                skipped = [col for col in categorical if col not in gpu_categorical]
+                log.info(
+                    "Final LightGBM GPU categorical features=%s; high-cardinality encoded ids treated as numeric bins=%s",
+                    gpu_categorical,
+                    skipped,
+                )
+                categorical = gpu_categorical
             model = lgb.LGBMRegressor(**params)
             model.fit(X_train, target_values, sample_weight=weights, categorical_feature=categorical)
             final_models[name] = model

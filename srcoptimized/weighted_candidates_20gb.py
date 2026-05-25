@@ -5,7 +5,7 @@ This runner is intentionally narrow:
   - CatBoost is disabled.
   - Three raw LightGBM weight modes are compared on December validation.
   - Scale tuning is local only: 0.70..1.15 step 0.025.
-  - Group scale is kept only when it beats the candidate's global scale.
+  - Refined 5-bucket group scale is kept only when it beats the candidate's global scale.
   - It writes exactly four new candidate CSVs; the fifth file is the 38.8 control.
 """
 
@@ -32,7 +32,7 @@ import pipeline_20gb as pipe  # noqa: E402
 base = pipe.base
 
 WEIGHT_MODES = ("none", "inv_y", "inv_sqrt_y")
-GROUP_NAMES = ("low_sale", "mid_sale", "high_sale")
+GROUP_NAMES = ("very_low", "low", "mid", "high", "very_high")
 SCALE_VALUES = np.round(np.arange(0.70, 1.1501, 0.025), 6)
 
 
@@ -130,8 +130,8 @@ def train_validation_raw_models(train_df: pd.DataFrame, val_df: pd.DataFrame, fe
         y_train = train_df["target"].to_numpy(dtype=np.float32)
         X_eval = eval_df[features]
         y_eval = eval_df["target"].to_numpy(dtype=np.float32)
-        categorical = [col for col in ["location_code", "item_code", "category_code", "brand_code"] if col in features]
         params = pipe.lgbm_params()
+        categorical = pipe.lgbm_categorical_features(params, features)
 
         models: dict = {}
         val_preds: dict = {}
@@ -163,8 +163,8 @@ def train_validation_log_model(train_df: pd.DataFrame, val_df: pd.DataFrame, fea
         y_train = train_df["target"].to_numpy(dtype=np.float32)
         X_eval = eval_df[features]
         y_eval = eval_df["target"].to_numpy(dtype=np.float32)
-        categorical = [col for col in ["location_code", "item_code", "category_code", "brand_code"] if col in features]
         params = pipe.lgbm_params()
+        categorical = pipe.lgbm_categorical_features(params, features)
         weights = sample_weights(y_train, weight_mode)
         eval_args = eval_args_for(X_eval, np.log1p(y_eval), weight_mode, weight_target=y_eval)
         model = pipe.fit_lgbm_model(
@@ -192,8 +192,10 @@ def recent_mean(frame: pd.DataFrame) -> np.ndarray:
 def group_codes_from_frame(frame: pd.DataFrame) -> np.ndarray:
     recent = recent_mean(frame)
     codes = np.zeros(len(frame), dtype=np.int8)
-    codes[(recent > 1.0) & (recent <= 5.0)] = 1
-    codes[recent > 5.0] = 2
+    codes[(recent > 0.5) & (recent <= 1.0)] = 1
+    codes[(recent > 1.0) & (recent <= 5.0)] = 2
+    codes[(recent > 5.0) & (recent <= 20.0)] = 3
+    codes[recent > 20.0] = 4
     return codes
 
 
@@ -392,13 +394,16 @@ def train_final_raw_models(final_train_df: pd.DataFrame, features: List[str], va
     with pipe.timer("train final raw models for all weight modes"):
         X_train = final_train_df[features]
         y_train = final_train_df["target"].to_numpy(dtype=np.float32)
-        categorical = [col for col in ["location_code", "item_code", "category_code", "brand_code"] if col in features]
+        params_probe = pipe.lgbm_params()
+        categorical = pipe.lgbm_categorical_features(params_probe, features)
         final_models = {}
         for mode in WEIGHT_MODES:
             source = val_models[mode]
             n_estimators = int(getattr(source, "best_iteration_", None) or getattr(source, "n_estimators", 800))
             params = source.get_params()
             params.update({"n_estimators": max(50, n_estimators), "objective": "regression_l1"})
+            if params.get("device_type") == "gpu":
+                categorical = pipe.lgbm_categorical_features(params, features)
             weights = sample_weights(y_train, mode)
             print(f"\n=== Train final raw LightGBM weight_mode={mode} n_estimators={params['n_estimators']} ===", flush=True)
             model = pipe.fit_lgbm_model(params, "regression_l1", X_train, y_train, weights, categorical, eval_args={})

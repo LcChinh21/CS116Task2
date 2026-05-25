@@ -1,22 +1,32 @@
 # Submit Plan
 
-1. `outputs/submission_best_38_8.pkl`
-   - validation MAPE: 51.548672 existing Dec validation from best 38.8 run
-   - scale/postprocess: control artifact, no overwrite
-   - ly do nop: giu best public score 38.8 lam control
-2. `outputs/submission_raw_only_scale_best.pkl`
-   - validation MAPE: 59.067970
-   - scale/postprocess: global scale 0.700
-   - ly do nop: unweighted raw LightGBM; local best global scale
-3. `outputs/submission_weighted_inv_y_scale_best.pkl`
-   - validation MAPE: 51.345707
-   - scale/postprocess: global scale 1.000
-   - ly do nop: MAPE-like inv_y sample weights; local best global scale
-4. `outputs/submission_weighted_inv_sqrt_y_scale_best.pkl`
-   - validation MAPE: 55.463587
-   - scale/postprocess: global scale 0.900
-   - ly do nop: milder inv_sqrt_y sample weights; local best global scale
-5. `outputs/submission_group_scale_best.pkl`
+1. `outputs/submission_best_38_9.csv`
    - validation MAPE: 51.344541
-   - scale/postprocess: group scales {"high_sale": 0.975, "low_sale": 1.0, "mid_sale": 1.0}
-   - ly do nop: best local candidate among group-scale improvements and raw-baseline blends
+   - public score: 38.9
+   - scale/postprocess: control from previous best `submission_group_scale_best.csv`; 3-group scales `{"high_sale": 0.975, "low_sale": 1.0, "mid_sale": 1.0}`
+   - model config: inv_y, raw_only, previous weighted candidate run
+   - reason: keep current leaderboard best as control; do not overwrite
+
+2. `outputs/submission_larger_1800k_gpu_inv_y_raw_scale_best.csv`
+   - validation MAPE: 51.180930
+   - scale/postprocess: global scale 1.000
+   - model config: GPU LightGBM, inv_y, raw_only, train rows 1.8M, final rows 2.6M, eval rows 700k, trees 900, leaves 63, max_bin 31, CatBoost off
+   - reason: strongest pure raw inv_y local score; low-risk because no group extrapolation
+
+3. `outputs/submission_current_inv_y_5group_scale.csv`
+   - validation MAPE: 51.504034
+   - scale/postprocess: 5-group scales `{"very_low": 1.0, "low": 1.0, "mid": 1.0, "high": 0.925, "very_high": 1.1}`
+   - model config: inv_y, raw_only, current cache, 137 features, CatBoost off
+   - reason: refined 5-group scale beats current global and legacy 3-group locally
+
+4. `outputs/submission_larger_1800k_gpu_inv_y_5group_scale.csv`
+   - validation MAPE: 51.150370
+   - scale/postprocess: 5-group scales `{"very_low": 1.0, "low": 1.0, "mid": 1.0, "high": 0.95, "very_high": 1.125}`
+   - model config: GPU LightGBM, inv_y, raw_only, train rows 1.8M, final rows 2.6M, eval rows 700k, trees 900, leaves 63, max_bin 31, CatBoost off
+   - reason: best local candidate; 5-group scale beats global 51.180930 and legacy 3-group 51.178582
+
+5. `outputs/submission_larger_1800k_gpu_inv_y_scale_neighbor.csv`
+   - validation MAPE: 51.587211
+   - scale/postprocess: global scale neighbor 1.025
+   - model config: same GPU larger-sample inv_y raw_only model as submit 2/4
+   - reason: fallback slot because event-feature variant is not validated yet; include only after higher-priority files if using all 5 submissions
