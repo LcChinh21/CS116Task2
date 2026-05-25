@@ -10,8 +10,8 @@
 set -e
 
 # Define variables
-REMOTE_NAME="gdrive"
-REMOTE_DIR="CS116_Output"
+REMOTE_NAME="drive"
+REMOTE_DIR="output"
 LOCAL_DIR="outputs/"
 LOG_FILE="rclone_upload.log"
 
@@ -46,18 +46,16 @@ echo "[2/3] Checking for rclone remote configuration..."
 
 # Find if the remote exists in the config
 if ! rclone listremotes | grep -q "${REMOTE_NAME}:"; then
-    echo "------------------------------------------------------------"
-    echo " ERROR: rclone remote '${REMOTE_NAME}' is not configured!"
-    echo "------------------------------------------------------------"
-    echo " Please configure rclone manually first:"
-    echo " 1. Run: rclone config"
-    echo " 2. Type 'n' for new remote and name it '${REMOTE_NAME}'"
-    echo " 3. Select '19' (or similar) for Google Drive (drive)"
-    echo " 4. Leave Client ID/Secret blank"
-    echo " 5. Set scope to '1' (Full access)"
-    echo " 6. Enter 'y' for auto config to authenticate via browser"
-    echo " 7. Try running this script again after setup."
-    exit 1
+    echo "      Remote '${REMOTE_NAME}:' not found. Configuring automatically..."
+    mkdir -p ~/.config/rclone
+    cat >> ~/.config/rclone/rclone.conf << EOF
+
+[${REMOTE_NAME}]
+type = drive
+scope = drive
+token = {"access_token":"ya29.a0AQvPyIOGs2Ckatr2m6sTJEDhqMFTfd44hi9J11RBzYf06aUqJ3waSDjfNilclEvCgKYc1LhAGUHcPOEEFoAv9-OD39Tx1r9WARpqaAuq68U7BYCR4nORJbB9p__OKOljR5i3l-VQtYWPrgV2Zh6rLqz2kEx40RpV7A3ccUUZEb2VDMVvG99w1yJgC76Vm7m5YwVfwiUaCgYKAc8SARYSFQHGX2MiNLPESmcm9WzSsuwAEALvpA0206","token_type":"Bearer","refresh_token":"1//0eck9B595oDg7CgYIARAAGA4SNwF-L9IrgGeqHeCwLq9OGOPB2-bcNJBvezJFMVzl1fvL0KwNE_k2aB-q953ELRTj3gfb9h07-NE","expiry":"2026-05-25T06:32:50.055743612Z"}
+EOF
+    echo "      Configuration created successfully!"
 else
     echo "      Remote '${REMOTE_NAME}:' found."
 fi
@@ -68,8 +66,8 @@ fi
 echo "[3/3] Uploading '${LOCAL_DIR}' to '${REMOTE_NAME}:${REMOTE_DIR}'..."
 echo "      (Progress will be printed below)"
 
-# Run رclone copy with progress bar. 
-rclone copy "$LOCAL_DIR" "${REMOTE_NAME}:${REMOTE_DIR}" -P --drive-chunk-size 64M
+# Run rclone copy with progress bar. 
+rclone copy "$LOCAL_DIR" "${REMOTE_NAME}:${REMOTE_DIR}" -P
 
 echo "============================================================"
 echo " Upload Pipeline Completed Successfully!"

@@ -64,33 +64,42 @@ DEFAULT_ENV = {
     # If LightGBM GPU raises an exception, retry that model on CPU.
     "OPT_FALLBACK_CPU": "1",
     "OPT_USE_RAW_ONLY": "1",
+    "OPT_WEIGHT_MODE": "inv_y",
+    "OPT_BLEND_MODE": "raw_only",
 }
 
 
 PROFILE_ENV = {
     "safe": {
         "OPT_RUN_CATBOOST": "0",
-        "OPT_MAX_TRAIN_ROWS": "1000000",
-        "OPT_MAX_FINAL_TRAIN_ROWS": "1500000",
-        "OPT_MAX_EVAL_ROWS": "500000",
-        "OPT_LGBM_TREES": "700",
+        "OPT_MAX_TRAIN_ROWS": "1200000",
+        "OPT_MAX_FINAL_TRAIN_ROWS": "1800000",
+        "OPT_MAX_EVAL_ROWS": "600000",
+        "OPT_LGBM_TREES": "800",
         "OPT_LGBM_LEAVES": "63",
         "OPT_LGBM_MIN_CHILD": "80",
         "LGBM_MAX_BIN": "31",
         "OPT_USE_RAW_ONLY": "1",
+        "OPT_WEIGHT_MODE": "inv_y",
+        "OPT_BLEND_MODE": "raw_only",
     },
     "stronger": {
         "OPT_RUN_CATBOOST": "0",
-        "OPT_MAX_TRAIN_ROWS": "1500000",
-        "OPT_MAX_FINAL_TRAIN_ROWS": "2200000",
+        "OPT_MAX_TRAIN_ROWS": "1200000",
+        "OPT_MAX_FINAL_TRAIN_ROWS": "1800000",
         "OPT_MAX_EVAL_ROWS": "600000",
-        "OPT_LGBM_TREES": "900",
+        "OPT_LGBM_TREES": "800",
         "OPT_LGBM_LEAVES": "95",
         "OPT_LGBM_MIN_CHILD": "80",
         "LGBM_MAX_BIN": "31",
         "OPT_USE_RAW_ONLY": "1",
+        "OPT_WEIGHT_MODE": "inv_y",
+        "OPT_BLEND_MODE": "raw_only",
     },
 }
+
+WEIGHT_MODES = {"none", "inv_y", "inv_sqrt_y"}
+BLEND_MODES = {"raw_only", "raw_log", "raw_baseline_80_20", "raw_baseline_70_30"}
 
 
 @contextmanager
@@ -357,6 +366,59 @@ def lgbm_params() -> dict:
     return params
 
 
+def weight_mode_from_env(default: str = "inv_y") -> str:
+    mode = os.getenv("OPT_WEIGHT_MODE", default).strip().lower()
+    if mode not in WEIGHT_MODES:
+        raise ValueError(f"OPT_WEIGHT_MODE must be one of {sorted(WEIGHT_MODES)}; got {mode!r}")
+    return mode
+
+
+def sample_weights_for_mode(y: np.ndarray, mode: str) -> Optional[np.ndarray]:
+    if mode == "none":
+        return None
+    y_safe = np.maximum(np.asarray(y, dtype=np.float32), 1.0)
+    if mode == "inv_y":
+        return (1.0 / y_safe).astype("float32")
+    if mode == "inv_sqrt_y":
+        return (1.0 / np.sqrt(y_safe)).astype("float32")
+    raise ValueError(f"Unknown weight mode: {mode}")
+
+
+def blend_mode_from_env(default: str = "raw_only") -> str:
+    mode = os.getenv("OPT_BLEND_MODE", default).strip().lower()
+    if mode not in BLEND_MODES:
+        raise ValueError(f"OPT_BLEND_MODE must be one of {sorted(BLEND_MODES)}; got {mode!r}")
+    return mode
+
+
+def make_fixed_blend(mode: str, raw_pred: np.ndarray, log_pred: np.ndarray, baseline_pred: np.ndarray) -> np.ndarray:
+    if mode == "raw_only":
+        return raw_pred.astype("float32")
+    if mode == "raw_log":
+        return (0.5 * raw_pred + 0.5 * log_pred).astype("float32")
+    if mode == "raw_baseline_80_20":
+        return (0.8 * raw_pred + 0.2 * baseline_pred).astype("float32")
+    if mode == "raw_baseline_70_30":
+        return (0.7 * raw_pred + 0.3 * baseline_pred).astype("float32")
+    raise ValueError(f"Unknown blend mode: {mode}")
+
+
+def tune_fixed_blend_scale(data, val_df: pd.DataFrame, pred: np.ndarray, blend_mode: str) -> Tuple[np.ndarray, dict]:
+    pair_ids = val_df["pair_id"].to_numpy(dtype=np.int32)
+    best = {"mape_quantity": float("inf")}
+    best_pred = pred.copy()
+    scales = np.round(np.arange(0.70, 1.1501, 0.025), 4)
+    with timer(f"tune fixed blend scale mode={blend_mode}"):
+        for scale in scales:
+            candidate = np.clip(pred * scale, 0, None).astype("float32")
+            metrics = base.score_predictions(data, pair_ids, candidate, target_month=12)
+            if metrics["mape_quantity"] < best["mape_quantity"]:
+                best = {"blend_mode": blend_mode, "scale": float(scale), **metrics}
+                best_pred = candidate
+        log.info("best fixed blend params=%s", best)
+    return best_pred, best
+
+
 def cpu_params(params: dict) -> dict:
     cpu = dict(params)
     for key in ["device_type", "gpu_platform_id", "gpu_device_id", "gpu_use_dp"]:
@@ -410,16 +472,19 @@ def train_lightgbm_models_20gb(train_df: pd.DataFrame, val_df: pd.DataFrame, fea
         y_train = train_df["target"].to_numpy(dtype=np.float32)
         X_eval = eval_df[features]
         y_eval = eval_df["target"].to_numpy(dtype=np.float32)
-        weights = 1.0 / np.maximum(y_train, 1.0)
-        eval_weights = 1.0 / np.maximum(y_eval, 1.0)
+        weight_mode = weight_mode_from_env()
+        weights = sample_weights_for_mode(y_train, weight_mode)
+        eval_weights = sample_weights_for_mode(y_eval, weight_mode)
+        log.info("OPT_WEIGHT_MODE=%s", weight_mode)
         categorical = [col for col in ["location_code", "item_code", "category_code", "brand_code"] if col in features]
         callbacks = [lgb.early_stopping(base.env_int("OPT_EARLY_STOPPING", 50), verbose=False), lgb.log_evaluation(period=100)]
         eval_args = {
             "eval_set": [(X_eval, y_eval)],
-            "eval_sample_weight": [eval_weights],
             "eval_metric": "l1",
             "callbacks": callbacks,
         }
+        if eval_weights is not None:
+            eval_args["eval_sample_weight"] = [eval_weights]
         params = lgbm_params()
 
         raw_model = fit_lgbm_model(params, "regression_l1", X_train, y_train, weights, categorical, eval_args)
@@ -461,11 +526,22 @@ def stage_train(cp: Checkpoints, force: bool = False):
     if "catboost" in lgbm_val_preds.columns:
         pred_dict["CatBoost"] = lgbm_val_preds["catboost"].to_numpy(dtype=np.float32)
 
-    model_pred_val = base.combine_model_predictions(
-        {col: lgbm_val_preds[col].to_numpy(dtype=np.float32) for col in lgbm_val_preds.columns if col != "pair_id"}
-    )
     baseline_pred_val = val_df["baseline_weighted"].to_numpy(dtype=np.float32)
-    ensemble_val_pred, ensemble_params = base.grid_search_ensemble(data, val_df, model_pred_val, baseline_pred_val)
+    raw_pred_val = lgbm_val_preds["lgbm_raw"].to_numpy(dtype=np.float32)
+    log_pred_val = lgbm_val_preds["lgbm_log"].to_numpy(dtype=np.float32)
+    blend_mode = blend_mode_from_env()
+    if blend_mode == "raw_log":
+        raw_metrics = base.score_predictions(data, val_df["pair_id"].to_numpy(dtype=np.int32), raw_pred_val, target_month=12)
+        log_metrics = base.score_predictions(data, val_df["pair_id"].to_numpy(dtype=np.int32), log_pred_val, target_month=12)
+        if raw_metrics["mape_quantity"] <= log_metrics["mape_quantity"]:
+            log.info("raw_log requested but raw validates better than log; using raw_only. raw=%.6f log=%.6f", raw_metrics["mape_quantity"], log_metrics["mape_quantity"])
+            blend_mode = "raw_only"
+    model_pred_val = make_fixed_blend(blend_mode, raw_pred_val, log_pred_val, baseline_pred_val)
+    if blend_mode == "raw_only":
+        ensemble_val_pred, ensemble_params = base.grid_search_ensemble(data, val_df, model_pred_val, baseline_pred_val)
+        ensemble_params["blend_mode"] = blend_mode
+    else:
+        ensemble_val_pred, ensemble_params = tune_fixed_blend_scale(data, val_df, model_pred_val, blend_mode)
     post_val_pred, post_params = base.tune_postprocess(data, val_df, ensemble_val_pred)
     raw_post_pred, raw_post_params, safe_post_table = base.tune_safe_postprocess_options(
         data,
@@ -538,7 +614,9 @@ def train_final_lgbm_20gb(train_df: pd.DataFrame, features: List[str], val_model
     with timer("train final LightGBM models 20gb"):
         X_train = train_df[features]
         y_train = train_df["target"].to_numpy(dtype=np.float32)
-        weights = 1.0 / np.maximum(y_train, 1.0)
+        weight_mode = weight_mode_from_env()
+        weights = sample_weights_for_mode(y_train, weight_mode)
+        log.info("final OPT_WEIGHT_MODE=%s", weight_mode)
         categorical = [col for col in ["location_code", "item_code", "category_code", "brand_code"] if col in features]
         final_models = {}
         for name, target_values, objective in [
@@ -586,14 +664,23 @@ def stage_predict(cp: Checkpoints, force: bool = False) -> pd.DataFrame:
         raw_submission.to_csv(raw_path, index=False)
         log.info("saved raw-only candidate to %s", raw_path)
 
-    final_model_pred = base.combine_model_predictions(final_model_preds)
     final_baseline = pred_df["baseline_weighted"].to_numpy(dtype=np.float32)
-    final_ensemble = np.clip(
-        (ensemble_params["alpha"] * final_model_pred + (1.0 - ensemble_params["alpha"]) * final_baseline)
-        * ensemble_params["scale"],
-        0,
-        None,
-    ).astype("float32")
+    blend_mode = ensemble_params.get("blend_mode", blend_mode_from_env())
+    final_model_pred = make_fixed_blend(
+        blend_mode,
+        final_model_preds["lgbm_raw"],
+        final_model_preds.get("lgbm_log", final_model_preds["lgbm_raw"]),
+        final_baseline,
+    )
+    if "alpha" in ensemble_params:
+        final_ensemble = np.clip(
+            (ensemble_params["alpha"] * final_model_pred + (1.0 - ensemble_params["alpha"]) * final_baseline)
+            * ensemble_params["scale"],
+            0,
+            None,
+        ).astype("float32")
+    else:
+        final_ensemble = np.clip(final_model_pred * ensemble_params["scale"], 0, None).astype("float32")
     final_control = base.apply_postprocess_with_params(
         data,
         pred_df["pair_id"].to_numpy(dtype=np.int32),
