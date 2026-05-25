@@ -30,10 +30,32 @@ case "${PROFILE}" in
     : "${LGBM_MAX_BIN:=31}"
     : "${OPT_USE_RAW_ONLY:=1}"
     ;;
+  large58)
+    : "${OPT_RUN_CATBOOST:=0}"
+    : "${OPT_MAX_TRAIN_ROWS:=2200000}"
+    : "${OPT_MAX_FINAL_TRAIN_ROWS:=3200000}"
+    : "${OPT_MAX_EVAL_ROWS:=800000}"
+    : "${OPT_LGBM_TREES:=1000}"
+    : "${OPT_LGBM_LEAVES:=63}"
+    : "${OPT_LGBM_MIN_CHILD:=80}"
+    : "${LGBM_MAX_BIN:=31}"
+    : "${OPT_USE_RAW_ONLY:=1}"
+    ;;
+  a5000)
+    : "${OPT_RUN_CATBOOST:=0}"
+    : "${OPT_MAX_TRAIN_ROWS:=3000000}"
+    : "${OPT_MAX_FINAL_TRAIN_ROWS:=4500000}"
+    : "${OPT_MAX_EVAL_ROWS:=1000000}"
+    : "${OPT_LGBM_TREES:=1200}"
+    : "${OPT_LGBM_LEAVES:=63}"
+    : "${OPT_LGBM_MIN_CHILD:=80}"
+    : "${LGBM_MAX_BIN:=31}"
+    : "${OPT_USE_RAW_ONLY:=1}"
+    ;;
   none)
     ;;
   *)
-    echo "Unknown CS116_PROFILE=${PROFILE}; use safe, stronger, or none." >&2
+    echo "Unknown CS116_PROFILE=${PROFILE}; use safe, stronger, large58, a5000, or none." >&2
     exit 2
     ;;
 esac
@@ -59,7 +81,7 @@ export OPT_LGBM_MIN_CHILD="${OPT_LGBM_MIN_CHILD:-80}"
 export OPT_LGBM_SUBSAMPLE="${OPT_LGBM_SUBSAMPLE:-0.80}"
 export OPT_LGBM_COLSAMPLE="${OPT_LGBM_COLSAMPLE:-0.75}"
 export OPT_EARLY_STOPPING="${OPT_EARLY_STOPPING:-50}"
-export OPT_FALLBACK_CPU="${OPT_FALLBACK_CPU:-1}"
+export OPT_FALLBACK_CPU="${OPT_FALLBACK_CPU:-0}"
 export OPT_USE_RAW_ONLY="${OPT_USE_RAW_ONLY:-1}"
 
 # CatBoost is disabled by default because 4GB VRAM is usually too tight.
@@ -73,6 +95,7 @@ echo "CS116_PROFILE=${PROFILE}"
 echo "OPT_MAX_TRAIN_ROWS=${OPT_MAX_TRAIN_ROWS} OPT_MAX_FINAL_TRAIN_ROWS=${OPT_MAX_FINAL_TRAIN_ROWS} OPT_MAX_EVAL_ROWS=${OPT_MAX_EVAL_ROWS}"
 echo "OPT_LGBM_TREES=${OPT_LGBM_TREES} OPT_LGBM_LEAVES=${OPT_LGBM_LEAVES} OPT_LGBM_MIN_CHILD=${OPT_LGBM_MIN_CHILD} LGBM_MAX_BIN=${LGBM_MAX_BIN}"
 echo "OPT_USE_RAW_ONLY=${OPT_USE_RAW_ONLY} OPT_RUN_CATBOOST=${OPT_RUN_CATBOOST}"
+echo "OPT_ADD_TET_FEATURES=${OPT_ADD_TET_FEATURES:-0} OPT_ADD_EVENT_FEATURES=${OPT_ADD_EVENT_FEATURES:-0}"
 
 run_with_python() {
   set +e
@@ -86,11 +109,25 @@ run_with_python() {
   return "${status}"
 }
 
-if python - <<'PY' >/dev/null 2>&1
+MAMBA_ENV_PREFIX="${MAMBA_ENV_PREFIX:-/opt/micromamba/envs/rapids-feature}"
+MICROMAMBA_BIN="${MICROMAMBA_BIN:-/root/bin/micromamba}"
+
+if [ -x "${MICROMAMBA_BIN}" ] && [ -d "${MAMBA_ENV_PREFIX}" ]; then
+  if "${MICROMAMBA_BIN}" run -p "${MAMBA_ENV_PREFIX}" python - <<'PY' >/dev/null 2>&1
+import numpy, pandas, pyarrow, lightgbm
+PY
+  then
+    run_with_python "${MICROMAMBA_BIN}" run -p "${MAMBA_ENV_PREFIX}" python srcoptimized/pipeline_20gb.py --profile "${PROFILE}" "$@"
+    exit $?
+  fi
+fi
+
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+if "${PYTHON_BIN}" - <<'PY' >/dev/null 2>&1
 import numpy, pandas, pyarrow, lightgbm
 PY
 then
-  run_with_python python srcoptimized/pipeline_20gb.py --profile "${PROFILE}" "$@"
+  run_with_python "${PYTHON_BIN}" srcoptimized/pipeline_20gb.py --profile "${PROFILE}" "$@"
   exit $?
 fi
 

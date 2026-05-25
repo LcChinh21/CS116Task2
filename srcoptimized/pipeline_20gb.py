@@ -61,8 +61,9 @@ DEFAULT_ENV = {
     "OPT_CATBOOST_MAX_ROWS": "400000",
     "OPT_CATBOOST_ITERS": "300",
     "OPT_CATBOOST_DEPTH": "6",
-    # If LightGBM GPU raises an exception, retry that model on CPU.
-    "OPT_FALLBACK_CPU": "1",
+    # Keep disabled for leaderboard runs: if GPU fails, stop instead of
+    # silently switching to a different CPU training path.
+    "OPT_FALLBACK_CPU": "0",
     "OPT_USE_RAW_ONLY": "1",
     "OPT_WEIGHT_MODE": "inv_y",
     "OPT_BLEND_MODE": "raw_only",
@@ -90,6 +91,32 @@ PROFILE_ENV = {
         "OPT_MAX_EVAL_ROWS": "600000",
         "OPT_LGBM_TREES": "800",
         "OPT_LGBM_LEAVES": "95",
+        "OPT_LGBM_MIN_CHILD": "80",
+        "LGBM_MAX_BIN": "31",
+        "OPT_USE_RAW_ONLY": "1",
+        "OPT_WEIGHT_MODE": "inv_y",
+        "OPT_BLEND_MODE": "raw_only",
+    },
+    "large58": {
+        "OPT_RUN_CATBOOST": "0",
+        "OPT_MAX_TRAIN_ROWS": "2200000",
+        "OPT_MAX_FINAL_TRAIN_ROWS": "3200000",
+        "OPT_MAX_EVAL_ROWS": "800000",
+        "OPT_LGBM_TREES": "1000",
+        "OPT_LGBM_LEAVES": "63",
+        "OPT_LGBM_MIN_CHILD": "80",
+        "LGBM_MAX_BIN": "31",
+        "OPT_USE_RAW_ONLY": "1",
+        "OPT_WEIGHT_MODE": "inv_y",
+        "OPT_BLEND_MODE": "raw_only",
+    },
+    "a5000": {
+        "OPT_RUN_CATBOOST": "0",
+        "OPT_MAX_TRAIN_ROWS": "3000000",
+        "OPT_MAX_FINAL_TRAIN_ROWS": "4500000",
+        "OPT_MAX_EVAL_ROWS": "1000000",
+        "OPT_LGBM_TREES": "1200",
+        "OPT_LGBM_LEAVES": "63",
         "OPT_LGBM_MIN_CHILD": "80",
         "LGBM_MAX_BIN": "31",
         "OPT_USE_RAW_ONLY": "1",
@@ -202,9 +229,23 @@ class Checkpoints:
 
 
 def save_status(cp: Checkpoints, stage: str) -> None:
+    feature_env_keys = [
+        "OPT_ADD_TET_FEATURES",
+        "OPT_ADD_EVENT_FEATURES",
+        "OPT_EVENT_FEATURE_EXTRAS",
+        "OPT_WEIGHT_MODE",
+        "OPT_BLEND_MODE",
+        "OPT_MAX_TRAIN_ROWS",
+        "OPT_MAX_FINAL_TRAIN_ROWS",
+        "OPT_MAX_EVAL_ROWS",
+        "OPT_LGBM_TREES",
+        "OPT_LGBM_LEAVES",
+        "LGBM_MAX_BIN",
+    ]
     payload = {
         "last_stage": stage,
         "env": {key: os.getenv(key) for key in sorted(DEFAULT_ENV)},
+        "feature_env": {key: os.getenv(key) for key in feature_env_keys},
         "checkpoints": {name: str(path) for name, path in cp.paths().items() if path.exists()},
     }
     cp.status.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -772,9 +813,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-defaults", action="store_true", help="Do not apply the built-in 20GB/4GB defaults.")
     parser.add_argument(
         "--profile",
-        choices=["none", "safe", "stronger"],
+        choices=["none", "safe", "stronger", "large58", "a5000"],
         default=os.getenv("CS116_PROFILE", "safe"),
-        help="Resource profile. safe=20GB default, stronger=larger sample; env vars still take precedence.",
+        help="Resource profile. large58=34 cores/58GB, a5000=A5000/100GB+; env vars still take precedence.",
     )
     return parser.parse_args()
 

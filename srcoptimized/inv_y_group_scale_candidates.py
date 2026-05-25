@@ -3,8 +3,8 @@ Build deterministic inv_y/raw_only submission candidates from a pipeline cache.
 
 This script does not train models. It uses validation predictions and final
 models that already exist in a srcoptimized cache, tunes global/legacy/refined
-group scales on December validation, and writes CSV submissions with the
-official location,item_id,prediction schema.
+group scales on December validation, and writes portal pickle submissions with
+the location,item_id,quantity schema.
 """
 
 from __future__ import annotations
@@ -180,9 +180,22 @@ def make_submission(data, pred_df: pd.DataFrame, prediction: np.ndarray) -> pd.D
     return submission[["location", "item_id", "prediction"]]
 
 
+def to_portal_pickle_frame(submission: pd.DataFrame) -> pd.DataFrame:
+    portal = submission.rename(columns={"prediction": "quantity"}).copy()
+    portal["location"] = pd.to_numeric(portal["location"], errors="raise").astype(np.int64)
+    portal["item_id"] = pd.to_numeric(portal["item_id"], errors="raise").astype(np.int64)
+    portal["quantity"] = pd.to_numeric(portal["quantity"], errors="coerce").fillna(0).clip(lower=0).astype(np.float64)
+    portal.columns = pd.Index(["location", "item_id", "quantity"], dtype=object)
+    return portal[["location", "item_id", "quantity"]]
+
+
 def write_submission(path: Path, data, pred_df: pd.DataFrame, prediction: np.ndarray) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    make_submission(data, pred_df, prediction).to_csv(path, index=False)
+    submission = make_submission(data, pred_df, prediction)
+    if path.suffix.lower() in {".pkl", ".pickle"}:
+        to_portal_pickle_frame(submission).to_pickle(path)
+    else:
+        submission.to_csv(path, index=False)
     print(f"wrote {path}")
 
 
@@ -196,7 +209,7 @@ def display_path(path: Path) -> str:
 
 def load_final_raw_prediction(cp: pipe.Checkpoints, pred_df: pd.DataFrame, features: list[str], tag: str) -> np.ndarray:
     cache_path = base.OUTPUT_DIR / "candidate_final_predictions" / f"{tag}_lgbm_raw.npy"
-    if cache_path.exists():
+    if cache_path.exists() and cache_path.stat().st_mtime >= cp.final_models.stat().st_mtime:
         return np.load(cache_path)
     final_models = pipe.read_pickle(cp.final_models)
     pred = pipe.predict_in_chunks(final_models["lgbm_raw"], pred_df, features, log_target=False)
@@ -211,8 +224,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tag", default="base")
     parser.add_argument("--raw-out", default="")
     parser.add_argument("--group-out", default="")
-    parser.add_argument("--neighbor-out", default="")
     parser.add_argument("--metadata-out", default="")
+    parser.add_argument("--plan-out", default="")
+    parser.add_argument("--control", default=str(base.OUTPUT_DIR / "submission_best_39_0.pkl"))
     return parser.parse_args()
 
 
@@ -251,28 +265,53 @@ def main() -> int:
     }
 
     final_raw = load_final_raw_prediction(cp, pred_df, features, args.tag)
-    raw_out = Path(args.raw_out) if args.raw_out else base.OUTPUT_DIR / f"submission_{args.tag}_inv_y_raw_scale_best.csv"
-    group_out = Path(args.group_out) if args.group_out else base.OUTPUT_DIR / f"submission_{args.tag}_inv_y_5group_scale.csv"
-    neighbor_out = Path(args.neighbor_out) if args.neighbor_out else base.OUTPUT_DIR / f"submission_{args.tag}_inv_y_scale_neighbor.csv"
+    raw_out = Path(args.raw_out) if args.raw_out else base.OUTPUT_DIR / f"submission_{args.tag}_inv_y_raw.pkl"
+    group_out = Path(args.group_out) if args.group_out else base.OUTPUT_DIR / f"submission_{args.tag}_inv_y_5group_scale.pkl"
 
     raw_final = np.clip(final_raw * float(global_params["scale"]), 0, None).astype(np.float32)
-    refined_final = apply_group(pred_df, final_raw, refined_params["group_scales"], refined=True)
-    all_scales = sorted(global_params["all_scales"], key=lambda r: (r["mape_quantity"], r["mae_quantity"], r["scale"]))
-    neighbor_scale = next((row["scale"] for row in all_scales if row["scale"] != global_params["scale"]), global_params["scale"])
-    neighbor_final = np.clip(final_raw * float(neighbor_scale), 0, None).astype(np.float32)
-    results["neighbor_global"] = {k: v for k, v in all_scales[1].items()} if len(all_scales) > 1 else results["global"]
 
     write_submission(raw_out, data, pred_df, raw_final)
-    write_submission(group_out, data, pred_df, refined_final)
-    write_submission(neighbor_out, data, pred_df, neighbor_final)
     results["outputs"] = {
+        "control_best_39_0": display_path(Path(args.control)),
         "raw": display_path(raw_out),
-        "refined_5_group": display_path(group_out),
-        "neighbor": display_path(neighbor_out),
     }
+    if refined_params["mape_quantity"] < global_params["mape_quantity"]:
+        refined_final = apply_group(pred_df, final_raw, refined_params["group_scales"], refined=True)
+        write_submission(group_out, data, pred_df, refined_final)
+        results["outputs"]["refined_5_group"] = display_path(group_out)
+        results["selected_group_scale"] = True
+    else:
+        if group_out.exists():
+            group_out.unlink()
+        results["selected_group_scale"] = False
+        results["skipped_group_out"] = display_path(group_out)
 
     meta_out = Path(args.metadata_out) if args.metadata_out else base.OUTPUT_DIR / f"candidate_validation_{args.tag}.json"
     meta_out.write_text(json.dumps(results, indent=2), encoding="utf-8")
+    if args.plan_out:
+        plan_out = Path(args.plan_out)
+        plan_lines = [
+            "# Submit Plan",
+            "",
+            "1. `outputs/submission_best_39_0.pkl`",
+            "   - role: control_best_39_0",
+            "   - public score: 39.0",
+            "   - reason: locked control, do not overwrite",
+            "",
+            f"2. `{display_path(raw_out)}`",
+            "   - role: larger_sample_inv_y_raw",
+            f"   - validation MAPE: {global_params['mape_quantity']:.6f}",
+            f"   - scale/postprocess: global scale {global_params['scale']:.3f}",
+            "   - reason: new model/feature candidate, not random scale probing",
+            "",
+            f"3. `{display_path(group_out)}`",
+            "   - role: larger_sample_inv_y_raw + 5_group_scale",
+            f"   - validation MAPE: {refined_params['mape_quantity']:.6f}",
+            f"   - selected: {refined_params['mape_quantity'] < global_params['mape_quantity']}",
+            f"   - scales: `{json.dumps(refined_params['group_scales'], sort_keys=True)}`",
+            "   - reason: keep only when validation beats raw",
+        ]
+        plan_out.write_text("\n".join(plan_lines) + "\n", encoding="utf-8")
     print(json.dumps(results, indent=2))
     return 0
 

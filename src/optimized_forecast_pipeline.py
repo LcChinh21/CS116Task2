@@ -27,6 +27,7 @@ import time
 import warnings
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -147,6 +148,8 @@ class MonthlyData:
     n_locations: int
     n_categories: int
     n_brands: int
+    li_view_count: Optional[np.ndarray] = None
+    li_atc_count: Optional[np.ndarray] = None
 
 
 def parquet_schema_names(path: Path) -> List[str]:
@@ -223,7 +226,11 @@ def aggregate_purchases(max_row_groups: int = 0) -> pd.DataFrame:
 
 def aggregate_events(max_row_groups: int = 0) -> pd.DataFrame:
     path = DATA_DIR / CFG["EVENT_FILE"]
+    names = parquet_schema_names(path)
+    event_location_col = choose_existing_column(names, [CFG.get("EV_LOCATION_COL"), LOCATION_COL, "location"])
     columns = [ITEM_COL, EV_DATE_COL, EV_EVENT_COL, EV_QTY_COL]
+    if event_location_col and event_location_col not in columns:
+        columns.append(event_location_col)
     partials: List[pd.DataFrame] = []
 
     with timer("aggregate view/add-to-cart rows to item-month"):
@@ -234,6 +241,11 @@ def aggregate_events(max_row_groups: int = 0) -> pd.DataFrame:
                 continue
 
             df[ITEM_COL] = df[ITEM_COL].astype(str)
+            group_cols = [ITEM_COL, "month_idx"]
+            if event_location_col and event_location_col in df.columns:
+                df[LOCATION_COL] = pd.to_numeric(df[event_location_col], errors="coerce").fillna(-1).astype("int32")
+                df = df[df[LOCATION_COL] >= 0]
+                group_cols = [LOCATION_COL, ITEM_COL, "month_idx"]
             df["month_idx"] = pd.to_datetime(df[EV_DATE_COL]).dt.month.astype("int8")
             df[EV_QTY_COL] = pd.to_numeric(df[EV_QTY_COL], errors="coerce").fillna(0).astype("float32")
             df["is_view"] = df[EV_EVENT_COL].astype(str).eq(VIEW_EVT).astype("int8")
@@ -242,7 +254,7 @@ def aggregate_events(max_row_groups: int = 0) -> pd.DataFrame:
             df["atc_qty"] = np.where(df["is_atc"].to_numpy(dtype=bool), df[EV_QTY_COL].to_numpy(), 0).astype("float32")
 
             grouped = (
-                df.groupby([ITEM_COL, "month_idx"], observed=True, sort=False)
+                df.groupby(group_cols, observed=True, sort=False)
                 .agg(
                     view_count=("is_view", "sum"),
                     atc_count=("is_atc", "sum"),
@@ -258,12 +270,18 @@ def aggregate_events(max_row_groups: int = 0) -> pd.DataFrame:
             cleanup()
 
         if not partials:
-            return pd.DataFrame(columns=[ITEM_COL, "month_idx", "view_count", "atc_count", "view_qty", "atc_qty"])
+            columns = [ITEM_COL, "month_idx", "view_count", "atc_count", "view_qty", "atc_qty"]
+            if event_location_col:
+                columns.insert(0, LOCATION_COL)
+            return pd.DataFrame(columns=columns)
 
         monthly = pd.concat(partials, ignore_index=True)
         del partials
+        group_cols = [ITEM_COL, "month_idx"]
+        if LOCATION_COL in monthly.columns:
+            group_cols = [LOCATION_COL, ITEM_COL, "month_idx"]
         monthly = (
-            monthly.groupby([ITEM_COL, "month_idx"], observed=True, sort=False)
+            monthly.groupby(group_cols, observed=True, sort=False)
             .agg(
                 view_count=("view_count", "sum"),
                 atc_count=("atc_count", "sum"),
@@ -398,6 +416,16 @@ def encode_monthly_tables(purchase_monthly: pd.DataFrame, events_monthly: pd.Dat
         ev = events_monthly.merge(item_map, on=ITEM_COL, how="inner")
         view_count = make_wide_array(ev, "item_code", "view_count", n_items)
         atc_count = make_wide_array(ev, "item_code", "atc_count", n_items)
+        li_view_count = None
+        li_atc_count = None
+        if LOCATION_COL in events_monthly.columns:
+            event_pairs = events_monthly.copy()
+            event_pairs[LOCATION_COL] = pd.to_numeric(event_pairs[LOCATION_COL], errors="coerce").fillna(-1).astype("int32")
+            pair_event_map = pairs[[LOCATION_COL, ITEM_COL, "pair_id"]].copy()
+            pair_event_map[ITEM_COL] = pair_event_map[ITEM_COL].astype(str)
+            ev_pair = event_pairs.merge(pair_event_map, on=[LOCATION_COL, ITEM_COL], how="inner")
+            li_view_count = make_wide_array(ev_pair, "pair_id", "view_count", n_pairs)
+            li_atc_count = make_wide_array(ev_pair, "pair_id", "atc_count", n_pairs)
 
         item_price = (
             pairs.groupby("item_code", observed=True)["item_price"]
@@ -436,6 +464,8 @@ def encode_monthly_tables(purchase_monthly: pd.DataFrame, events_monthly: pd.Dat
             n_locations=n_locations,
             n_categories=n_categories,
             n_brands=n_brands,
+            li_view_count=li_view_count,
+            li_atc_count=li_atc_count,
         )
 
 
@@ -460,6 +490,67 @@ def lag_values(history: np.ndarray, target_month: int, lag: int) -> np.ndarray:
 
 def rolling_window(history: np.ndarray, target_month: int, window: int) -> np.ndarray:
     return np.column_stack([lag_values(history, target_month, lag) for lag in range(1, window + 1)])
+
+
+TET_DATES = {
+    2025: date(2025, 1, 29),
+    2026: date(2026, 2, 17),
+    2027: date(2027, 2, 6),
+}
+
+
+def target_month_bounds(target_month: int) -> tuple[date, date]:
+    year = 2025 + (target_month - 1) // 12
+    month = ((target_month - 1) % 12) + 1
+    start = date(year, month, 1)
+    if month == 12:
+        end = date(year, 12, 31)
+    else:
+        end = date(year, month + 1, 1) - timedelta(days=1)
+    return start, end
+
+
+def next_tet_after(month_start: date) -> date:
+    for year in sorted(TET_DATES):
+        tet = TET_DATES[year]
+        if tet >= month_start:
+            return tet
+    last_year = max(TET_DATES)
+    # Fallback keeps feature generation deterministic if another forecast month
+    # is added before the exact lunar date table is extended.
+    return date(last_year + 1, 2, 1)
+
+
+def add_tet_features(features: Dict[str, np.ndarray], target_month: int, category_code: np.ndarray) -> None:
+    month_start, month_end = target_month_bounds(target_month)
+    tet = next_tet_after(month_start)
+    days_to_tet = float((tet - month_start).days)
+    abs_days_to_tet = abs(days_to_tet)
+    n = len(category_code)
+
+    def constant(value: float) -> np.ndarray:
+        return np.full(n, value, dtype=np.float32)
+
+    def overlaps(start: date, end: date) -> bool:
+        return month_start <= end and month_end >= start
+
+    pre_60 = overlaps(tet - timedelta(days=60), tet - timedelta(days=1))
+    pre_45 = overlaps(tet - timedelta(days=45), tet - timedelta(days=1))
+    pre_30 = overlaps(tet - timedelta(days=30), tet - timedelta(days=1))
+    post_30 = overlaps(tet, tet + timedelta(days=30))
+    is_tet_month = month_start.year == tet.year and month_start.month == tet.month
+
+    features["days_to_tet"] = constant(days_to_tet)
+    features["weeks_to_tet"] = constant(days_to_tet / 7.0)
+    features["abs_days_to_tet"] = constant(abs_days_to_tet)
+    features["is_pre_tet_60d"] = constant(float(pre_60))
+    features["is_pre_tet_45d"] = constant(float(pre_45))
+    features["is_pre_tet_30d"] = constant(float(pre_30))
+    features["is_tet_month"] = constant(float(is_tet_month))
+    features["is_post_tet_30d"] = constant(float(post_30))
+    features["category_pre_tet_60d_code"] = np.where(pre_60, category_code + 1, 0).astype("int32")
+    features["category_pre_tet_45d_code"] = np.where(pre_45, category_code + 1, 0).astype("int32")
+    features["category_pre_tet_30d_code"] = np.where(pre_30, category_code + 1, 0).astype("int32")
 
 
 def series_features(
@@ -568,7 +659,10 @@ def build_feature_frame(
         features["purchase_to_atc_roll3"] = (
             features["item_qty_roll_mean_3"] / (features["add_to_cart_roll_mean_3"] + 1.0)
         ).astype("float32")
-        if env_flag("OPT_EVENT_FEATURE_EXTRAS", False):
+        if env_flag("OPT_ADD_TET_FEATURES", False):
+            add_tet_features(features, target_month, cat_keys)
+
+        if env_flag("OPT_ADD_EVENT_FEATURES", env_flag("OPT_EVENT_FEATURE_EXTRAS", False)):
             for lag in (1, 2, 3):
                 features[f"item_view_lag{lag}"] = features[f"view_item_lag{lag}"].astype("float32")
                 features[f"item_atc_lag{lag}"] = features[f"add_to_cart_lag{lag}"].astype("float32")
@@ -583,6 +677,24 @@ def build_feature_frame(
             features["item_purchase_per_atc"] = (
                 features["item_qty_roll_mean_3"] / (features["item_atc_roll3"] + 1.0)
             ).astype("float32")
+            features["atc_per_view"] = features["item_atc_per_view"].astype("float32")
+            features["purchase_per_view"] = features["item_purchase_per_view"].astype("float32")
+            features["purchase_per_atc"] = features["item_purchase_per_atc"].astype("float32")
+
+            li_view_count = getattr(data, "li_view_count", None)
+            li_atc_count = getattr(data, "li_atc_count", None)
+            if li_view_count is not None and li_atc_count is not None:
+                features.update(series_features(li_view_count, pair_ids, target_month, "li_view", full=False))
+                features.update(series_features(li_atc_count, pair_ids, target_month, "li_atc", full=False))
+                features["li_atc_per_view"] = (
+                    features["li_atc_roll_mean_3"] / (features["li_view_roll_mean_3"] + 1.0)
+                ).astype("float32")
+                features["li_purchase_per_view"] = (
+                    features["li_qty_roll_mean_3"] / (features["li_view_roll_mean_3"] + 1.0)
+                ).astype("float32")
+                features["li_purchase_per_atc"] = (
+                    features["li_qty_roll_mean_3"] / (features["li_atc_roll_mean_3"] + 1.0)
+                ).astype("float32")
 
         frame = pd.DataFrame(features)
         frame["baseline_lag1"] = frame["li_qty_lag1"].astype("float32")
