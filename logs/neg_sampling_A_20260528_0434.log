@@ -1,0 +1,106 @@
+CS116_PROFILE=none
+OPT_MAX_TRAIN_ROWS=1800000 OPT_MAX_FINAL_TRAIN_ROWS=2600000 OPT_MAX_EVAL_ROWS=700000
+OPT_LGBM_TREES=900 OPT_LGBM_LEAVES=63 OPT_LGBM_MIN_CHILD=80 LGBM_MAX_BIN=31
+OPT_USE_RAW_ONLY=1 OPT_RUN_CATBOOST=0
+OPT_ADD_TET_FEATURES=1 OPT_ADD_EVENT_FEATURES=1
+2026-05-28 04:34:45,566 [INFO] cache_dir=outputs/srcoptimized_cache_neg_A
+2026-05-28 04:34:45,566 [INFO] RANDOM_STATE=42 OPT_USE_RAW_ONLY=1
+2026-05-28 04:34:46,271 [INFO] START build sampled training frames train_jan_to_nov | rss=769.3 MB
+2026-05-28 04:34:46,271 [INFO] START build feature frame train_jan_to_nov_m4 target_month=4 | rss=769.3 MB
+2026-05-28 04:34:49,526 [INFO] train_jan_to_nov_m4 shape=(861976, 165)
+2026-05-28 04:34:49,526 [INFO] DONE  build feature frame train_jan_to_nov_m4 target_month=4 in 3.3s | rss=1958.6 MB | delta=1189.3 MB
+2026-05-28 04:34:49,762 [INFO] month_sample negative sampling ratio=0.500 rows=225000/861976 positives=150000 zeros=75000 positive_rate=0.6667
+2026-05-28 04:34:49,763 [INFO] train_jan_to_nov month=4 sampled rows=225000/861976 positives=150000
+2026-05-28 04:34:49,803 [INFO] START build feature frame train_jan_to_nov_m5 target_month=5 | rss=932.3 MB
+2026-05-28 04:34:53,625 [INFO] train_jan_to_nov_m5 shape=(979425, 165)
+2026-05-28 04:34:53,626 [INFO] DONE  build feature frame train_jan_to_nov_m5 target_month=5 in 3.8s | rss=2286.6 MB | delta=1354.3 MB
+2026-05-28 04:34:53,874 [INFO] month_sample negative sampling ratio=0.500 rows=225000/979425 positives=150000 zeros=75000 positive_rate=0.6667
+2026-05-28 04:34:53,875 [INFO] train_jan_to_nov month=5 sampled rows=225000/979425 positives=150000
+2026-05-28 04:34:53,920 [INFO] START build feature frame train_jan_to_nov_m6 target_month=6 | rss=1076.4 MB
+2026-05-28 04:34:58,137 [INFO] train_jan_to_nov_m6 shape=(1130957, 165)
+2026-05-28 04:34:58,138 [INFO] DONE  build feature frame train_jan_to_nov_m6 target_month=6 in 4.2s | rss=2615.4 MB | delta=1539.0 MB
+2026-05-28 04:34:58,414 [INFO] month_sample negative sampling ratio=0.500 rows=225000/1130957 positives=150000 zeros=75000 positive_rate=0.6667
+2026-05-28 04:34:58,414 [INFO] train_jan_to_nov month=6 sampled rows=225000/1130957 positives=150000
+2026-05-28 04:34:58,453 [INFO] START build feature frame train_jan_to_nov_m7 target_month=7 | rss=1215.5 MB
+2026-05-28 04:35:03,325 [INFO] train_jan_to_nov_m7 shape=(1269322, 165)
+2026-05-28 04:35:03,325 [INFO] DONE  build feature frame train_jan_to_nov_m7 target_month=7 in 4.9s | rss=2883.5 MB | delta=1668.0 MB
+2026-05-28 04:35:03,603 [INFO] month_sample negative sampling ratio=0.500 rows=225000/1269322 positives=150000 zeros=75000 positive_rate=0.6667
+2026-05-28 04:35:03,603 [INFO] train_jan_to_nov month=7 sampled rows=225000/1269322 positives=150000
+2026-05-28 04:35:03,642 [INFO] START build feature frame train_jan_to_nov_m8 target_month=8 | rss=1401.9 MB
+2026-05-28 04:35:10,362 [INFO] train_jan_to_nov_m8 shape=(1401800, 165)
+2026-05-28 04:35:10,362 [INFO] DONE  build feature frame train_jan_to_nov_m8 target_month=8 in 6.7s | rss=3258.6 MB | delta=1856.6 MB
+2026-05-28 04:35:10,635 [INFO] month_sample negative sampling ratio=0.500 rows=225000/1401800 positives=150000 zeros=75000 positive_rate=0.6667
+2026-05-28 04:35:10,636 [INFO] train_jan_to_nov month=8 sampled rows=225000/1401800 positives=150000
+2026-05-28 04:35:10,663 [INFO] START build feature frame train_jan_to_nov_m9 target_month=9 | rss=2078.3 MB
+2026-05-28 04:35:18,259 [INFO] train_jan_to_nov_m9 shape=(1559814, 165)
+2026-05-28 04:35:18,259 [INFO] DONE  build feature frame train_jan_to_nov_m9 target_month=9 in 7.6s | rss=3565.8 MB | delta=1487.5 MB
+2026-05-28 04:35:18,547 [INFO] month_sample negative sampling ratio=0.500 rows=225000/1559814 positives=150000 zeros=75000 positive_rate=0.6667
+2026-05-28 04:35:18,548 [INFO] train_jan_to_nov month=9 sampled rows=225000/1559814 positives=150000
+2026-05-28 04:35:18,600 [INFO] START build feature frame train_jan_to_nov_m10 target_month=10 | rss=2227.1 MB
+2026-05-28 04:35:27,462 [INFO] train_jan_to_nov_m10 shape=(1694016, 165)
+2026-05-28 04:35:27,462 [INFO] DONE  build feature frame train_jan_to_nov_m10 target_month=10 in 8.9s | rss=3903.9 MB | delta=1676.8 MB
+2026-05-28 04:35:27,771 [INFO] month_sample negative sampling ratio=0.500 rows=225000/1694016 positives=150000 zeros=75000 positive_rate=0.6667
+2026-05-28 04:35:27,771 [INFO] train_jan_to_nov month=10 sampled rows=225000/1694016 positives=150000
+2026-05-28 04:35:27,850 [INFO] START build feature frame train_jan_to_nov_m11 target_month=11 | rss=2227.1 MB
+2026-05-28 04:35:38,628 [INFO] train_jan_to_nov_m11 shape=(1835068, 165)
+2026-05-28 04:35:38,629 [INFO] DONE  build feature frame train_jan_to_nov_m11 target_month=11 in 10.8s | rss=4250.1 MB | delta=2023.0 MB
+2026-05-28 04:35:38,952 [INFO] month_sample negative sampling ratio=0.500 rows=225000/1835068 positives=150000 zeros=75000 positive_rate=0.6667
+2026-05-28 04:35:38,952 [INFO] train_jan_to_nov month=11 sampled rows=225000/1835068 positives=150000
+2026-05-28 04:35:39,653 [INFO] train_jan_to_nov sampled rows=1800000 cols=165 positive_rate=0.6667
+2026-05-28 04:35:39,653 [INFO] DONE  build sampled training frames train_jan_to_nov in 53.4s | rss=2874.1 MB | delta=2104.8 MB
+2026-05-28 04:35:39,653 [INFO] START build feature frame validation_dec target_month=12 | rss=2874.1 MB
+2026-05-28 04:35:52,369 [INFO] validation_dec shape=(2018285, 165)
+2026-05-28 04:35:52,369 [INFO] DONE  build feature frame validation_dec target_month=12 in 12.7s | rss=4583.1 MB | delta=1709.0 MB
+2026-05-28 04:35:52,373 [INFO] feature_count=162
+2026-05-28 04:35:58,623 [INFO] saved outputs/srcoptimized_cache_neg_A/train_val_sample.parquet rows=1800000 cols=165
+2026-05-28 04:36:05,750 [INFO] saved outputs/srcoptimized_cache_neg_A/validation_dec.parquet rows=2018285 cols=165
+CS116_PROFILE=none
+OPT_MAX_TRAIN_ROWS=1800000 OPT_MAX_FINAL_TRAIN_ROWS=2600000 OPT_MAX_EVAL_ROWS=700000
+OPT_LGBM_TREES=900 OPT_LGBM_LEAVES=63 OPT_LGBM_MIN_CHILD=80 LGBM_MAX_BIN=31
+OPT_USE_RAW_ONLY=1 OPT_RUN_CATBOOST=0
+OPT_ADD_TET_FEATURES=1 OPT_ADD_EVENT_FEATURES=1
+2026-05-28 04:36:07,784 [INFO] cache_dir=outputs/srcoptimized_cache_neg_A
+2026-05-28 04:36:07,784 [INFO] RANDOM_STATE=42 OPT_USE_RAW_ONLY=1
+2026-05-28 04:36:08,573 [INFO] loading outputs/srcoptimized_cache_neg_A/train_val_sample.parquet
+2026-05-28 04:36:09,249 [INFO] loading outputs/srcoptimized_cache_neg_A/validation_dec.parquet
+2026-05-28 04:36:10,573 [INFO] START train LightGBM raw/log models 20gb | rss=5034.3 MB
+2026-05-28 04:36:11,982 [INFO] validation_eval negative sampling ratio=0.500 rows=700000/2018285 positives=466667 zeros=233333 positive_rate=0.6667
+2026-05-28 04:36:12,001 [INFO] OPT_WEIGHT_MODE=inv_y OPT_ZERO_WEIGHT=0.3
+2026-05-28 04:36:12,002 [INFO] LightGBM GPU disabled
+2026-05-28 04:38:52,825 [INFO] START predict chunks rows=2018285 chunk=250000 | rss=6357.7 MB
+2026-05-28 04:39:00,814 [INFO] DONE  predict chunks rows=2018285 chunk=250000 in 8.0s | rss=6357.7 MB | delta=0.0 MB
+2026-05-28 04:39:00,826 [INFO] START predict chunks rows=2018285 chunk=250000 | rss=6357.7 MB
+2026-05-28 04:39:05,029 [INFO] DONE  predict chunks rows=2018285 chunk=250000 in 4.2s | rss=6357.7 MB | delta=0.0 MB
+2026-05-28 04:39:05,064 [INFO] DONE  train LightGBM raw/log models 20gb in 174.5s | rss=6357.7 MB | delta=1323.4 MB
+2026-05-28 04:39:05,145 [INFO] saved outputs/srcoptimized_cache_neg_A/validation_lgbm_models.pkl
+2026-05-28 04:39:05,145 [INFO] saved outputs/srcoptimized_cache_neg_A/validation_cat_model.pkl
+2026-05-28 04:39:05,513 [INFO] saved outputs/srcoptimized_cache_neg_A/validation_model_predictions.parquet rows=2018285 cols=3
+2026-05-28 04:39:05,518 [INFO] START grid search ensemble alpha and scale | rss=4512.7 MB
+2026-05-28 04:40:32,253 [INFO] best ensemble params={'alpha': 1.0, 'scale': 1.0, 'mae_quantity': 2.1889286041259766, 'mape_quantity': 52.991329193115234, 'mae_revenue': 273131.71875, 'mape_revenue': 56.16126251220703}
+2026-05-28 04:40:32,253 [INFO] DONE  grid search ensemble alpha and scale in 86.7s | rss=4515.3 MB | delta=2.6 MB
+2026-05-28 04:40:38,855 [INFO] START tune postprocess clipping/floor | rss=4516.4 MB
+2026-05-28 04:41:23,471 [INFO] best postprocess params={'clip_kind': 'pair', 'clip_mult': 1.0, 'floor': 0.0, 'mae_quantity': 2.188687324523926, 'mape_quantity': 52.96661376953125, 'mae_revenue': 273069.0625, 'mape_revenue': 56.128883361816406}
+2026-05-28 04:41:23,471 [INFO] DONE  tune postprocess clipping/floor in 44.6s | rss=4519.5 MB | delta=3.0 MB
+2026-05-28 04:41:31,094 [INFO] START tune safe postprocess options | rss=4818.3 MB
+2026-05-28 04:41:32,983 [INFO] DONE  tune safe postprocess options in 1.9s | rss=4809.2 MB | delta=-9.1 MB
+2026-05-28 04:41:32,986 [INFO] safe postprocess best={'postprocess': 'item_q99', 'mae_quantity': 2.1890387535095215, 'mape_quantity': 52.991180419921875, 'mae_revenue': 273161.875, 'mape_revenue': 56.16105651855469}
+2026-05-28 04:41:35,422 [INFO] 
+                 model  mae_quantity  mape_quantity   mae_revenue  mape_revenue
+ensemble + postprocess      2.188687      52.966614 273069.062500     56.128883
+  raw_only_postprocess      2.189039      52.991180 273161.875000     56.161057
+          LightGBM raw      2.188929      52.991329 273131.718750     56.161263
+              ensemble      2.188929      52.991329 273131.718750     56.161263
+          LightGBM log      2.037775      56.209248 256290.343750     57.544350
+     baseline rolling3      1.743755      74.631538 244262.578125     79.742989
+         baseline lag1      2.064240      88.217369 284662.218750     97.272835
+2026-05-28 04:41:35,422 [INFO] START write validation report | rss=4510.7 MB
+2026-05-28 04:41:35,438 [INFO] validation table saved to /root/CS116Task2/outputs/optimized_validation_results.csv
+2026-05-28 04:41:35,438 [INFO] report saved to /root/CS116Task2/reports/optimized_model_results.md
+2026-05-28 04:41:35,438 [INFO] DONE  write validation report in 0.0s | rss=4510.8 MB | delta=0.1 MB
+2026-05-28 04:41:35,894 [INFO] START write wide validation predictions | rss=4510.3 MB
+2026-05-28 04:41:48,800 [INFO] validation predictions saved to /root/CS116Task2/outputs/validation_predictions.csv rows=2160992 cols=8
+2026-05-28 04:41:48,801 [INFO] DONE  write wide validation predictions in 12.9s | rss=4511.9 MB | delta=1.5 MB
+[100]	valid_0's l1: 0.823014
+[200]	valid_0's l1: 0.819631
+[100]	valid_0's l1: 0.318482	valid_0's l2: 0.173601
+wrote reports/train_sampling_diagnostic_neg_A.md

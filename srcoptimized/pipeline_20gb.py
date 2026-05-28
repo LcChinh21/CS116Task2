@@ -67,6 +67,8 @@ DEFAULT_ENV = {
     "OPT_USE_RAW_ONLY": "1",
     "OPT_WEIGHT_MODE": "inv_y",
     "OPT_BLEND_MODE": "raw_only",
+    "OPT_NEGATIVE_SAMPLE_RATIO": "",
+    "OPT_ZERO_WEIGHT": "1.0",
 }
 
 
@@ -235,6 +237,8 @@ def save_status(cp: Checkpoints, stage: str) -> None:
         "OPT_EVENT_FEATURE_EXTRAS",
         "OPT_WEIGHT_MODE",
         "OPT_BLEND_MODE",
+        "OPT_NEGATIVE_SAMPLE_RATIO",
+        "OPT_ZERO_WEIGHT",
         "OPT_MAX_TRAIN_ROWS",
         "OPT_MAX_FINAL_TRAIN_ROWS",
         "OPT_MAX_EVAL_ROWS",
@@ -279,10 +283,74 @@ def load_data(cp: Checkpoints):
     return read_pickle(cp.monthly_data)
 
 
+def negative_sample_ratio_from_env() -> Optional[float]:
+    raw = os.getenv("OPT_NEGATIVE_SAMPLE_RATIO", "").strip().lower()
+    if raw in {"", "none", "off", "false"}:
+        return None
+    ratio = float(raw)
+    if ratio < 0:
+        return None
+    return ratio
+
+
+def sample_training_rows_with_negatives(
+    frame: pd.DataFrame,
+    max_rows: int,
+    seed: int,
+    ratio: float,
+    label: str,
+) -> pd.DataFrame:
+    rng = np.random.default_rng(seed)
+    positive_idx = frame.index[frame["target"] > 0].to_numpy()
+    zero_idx = frame.index[frame["target"] <= 0].to_numpy()
+
+    if len(positive_idx) == 0:
+        n_zero = len(zero_idx) if max_rows <= 0 else min(len(zero_idx), max_rows)
+        chosen = rng.choice(zero_idx, size=n_zero, replace=False) if n_zero < len(zero_idx) else zero_idx
+    else:
+        desired_zero = min(len(zero_idx), int(np.ceil(len(positive_idx) * ratio)))
+        desired_total = len(positive_idx) + desired_zero
+        if max_rows <= 0 or desired_total <= max_rows:
+            n_pos = len(positive_idx)
+            n_zero = desired_zero
+        else:
+            target_pos_rate = 1.0 / (1.0 + ratio) if ratio > 0 else 1.0
+            n_pos = min(len(positive_idx), max(1, int(round(max_rows * target_pos_rate))))
+            n_zero = min(len(zero_idx), max_rows - n_pos)
+            if n_zero == 0 and n_pos < max_rows:
+                n_pos = min(len(positive_idx), max_rows)
+        chosen_pos = rng.choice(positive_idx, size=n_pos, replace=False) if n_pos < len(positive_idx) else positive_idx
+        chosen_zero = rng.choice(zero_idx, size=n_zero, replace=False) if n_zero < len(zero_idx) else zero_idx
+        chosen = np.concatenate([chosen_pos, chosen_zero])
+
+    rng.shuffle(chosen)
+    sampled = frame.loc[chosen].reset_index(drop=True)
+    positives = int((sampled["target"] > 0).sum())
+    zeros = int((sampled["target"] <= 0).sum())
+    log.info(
+        "%s negative sampling ratio=%.3f rows=%s/%s positives=%s zeros=%s positive_rate=%.4f",
+        label,
+        ratio,
+        len(sampled),
+        len(frame),
+        positives,
+        zeros,
+        positives / max(len(sampled), 1),
+    )
+    return sampled
+
+
+def sample_training_rows_for_fit(frame: pd.DataFrame, max_rows: int, seed: int, label: str) -> pd.DataFrame:
+    ratio = negative_sample_ratio_from_env()
+    if ratio is None:
+        if max_rows <= 0:
+            return frame
+        return base.sample_training_rows(frame, max_rows=max_rows, seed=seed)
+    return sample_training_rows_with_negatives(frame, max_rows=max_rows, seed=seed, ratio=ratio, label=label)
+
+
 def sample_one_month(frame: pd.DataFrame, max_rows: int, seed: int) -> pd.DataFrame:
-    if max_rows <= 0:
-        return frame
-    return base.sample_training_rows(frame, max_rows=max_rows, seed=seed)
+    return sample_training_rows_for_fit(frame, max_rows=max_rows, seed=seed, label="month_sample")
 
 
 def build_sampled_training_frames(
@@ -316,7 +384,12 @@ def build_sampled_training_frames(
         del frames
         cleanup()
         if final_cap > 0 and len(result) > final_cap:
-            result = base.sample_training_rows(result, final_cap, seed=base.RANDOM_STATE + seed_offset + 99)
+            result = sample_training_rows_for_fit(
+                result,
+                final_cap,
+                seed=base.RANDOM_STATE + seed_offset + 99,
+                label=f"{label}_final_cap",
+            )
         log.info("%s sampled rows=%s cols=%s positive_rate=%.4f", label, len(result), result.shape[1], (result["target"] > 0).mean())
         return result
 
@@ -417,12 +490,19 @@ def weight_mode_from_env(default: str = "inv_y") -> str:
 def sample_weights_for_mode(y: np.ndarray, mode: str) -> Optional[np.ndarray]:
     if mode == "none":
         return None
-    y_safe = np.maximum(np.asarray(y, dtype=np.float32), 1.0)
+    y_array = np.asarray(y, dtype=np.float32)
+    y_safe = np.maximum(y_array, 1.0)
     if mode == "inv_y":
-        return (1.0 / y_safe).astype("float32")
-    if mode == "inv_sqrt_y":
-        return (1.0 / np.sqrt(y_safe)).astype("float32")
-    raise ValueError(f"Unknown weight mode: {mode}")
+        weights = (1.0 / y_safe).astype("float32")
+    elif mode == "inv_sqrt_y":
+        weights = (1.0 / np.sqrt(y_safe)).astype("float32")
+    else:
+        raise ValueError(f"Unknown weight mode: {mode}")
+    zero_weight = base.env_float("OPT_ZERO_WEIGHT", 1.0)
+    if zero_weight < 0:
+        raise ValueError(f"OPT_ZERO_WEIGHT must be >= 0; got {zero_weight}")
+    weights[y_array <= 0] = np.float32(zero_weight)
+    return weights
 
 
 def blend_mode_from_env(default: str = "raw_only") -> str:
@@ -522,7 +602,12 @@ def train_lightgbm_models_20gb(train_df: pd.DataFrame, val_df: pd.DataFrame, fea
 
     with timer("train LightGBM raw/log models 20gb"):
         eval_rows = base.env_int("OPT_MAX_EVAL_ROWS", 350_000)
-        eval_df = base.sample_training_rows(val_df, eval_rows, seed=base.RANDOM_STATE + 700)
+        eval_df = sample_training_rows_for_fit(
+            val_df,
+            eval_rows,
+            seed=base.RANDOM_STATE + 700,
+            label="validation_eval",
+        )
 
         X_train = train_df[features]
         y_train = train_df["target"].to_numpy(dtype=np.float32)
@@ -531,7 +616,7 @@ def train_lightgbm_models_20gb(train_df: pd.DataFrame, val_df: pd.DataFrame, fea
         weight_mode = weight_mode_from_env()
         weights = sample_weights_for_mode(y_train, weight_mode)
         eval_weights = sample_weights_for_mode(y_eval, weight_mode)
-        log.info("OPT_WEIGHT_MODE=%s", weight_mode)
+        log.info("OPT_WEIGHT_MODE=%s OPT_ZERO_WEIGHT=%s", weight_mode, os.getenv("OPT_ZERO_WEIGHT", "1.0"))
         callbacks = [lgb.early_stopping(base.env_int("OPT_EARLY_STOPPING", 50), verbose=False), lgb.log_evaluation(period=100)]
         eval_args = {
             "eval_set": [(X_eval, y_eval)],
@@ -672,7 +757,7 @@ def train_final_lgbm_20gb(train_df: pd.DataFrame, features: List[str], val_model
         y_train = train_df["target"].to_numpy(dtype=np.float32)
         weight_mode = weight_mode_from_env()
         weights = sample_weights_for_mode(y_train, weight_mode)
-        log.info("final OPT_WEIGHT_MODE=%s", weight_mode)
+        log.info("final OPT_WEIGHT_MODE=%s OPT_ZERO_WEIGHT=%s", weight_mode, os.getenv("OPT_ZERO_WEIGHT", "1.0"))
         params_probe = lgbm_params()
         categorical = lgbm_categorical_features(params_probe, features)
         final_models = {}

@@ -1,0 +1,11 @@
+2026-05-28 05:00:20,421 [INFO] loading outputs/srcoptimized_cache_neg_B/train_val_sample.parquet
+2026-05-28 05:00:21,050 [INFO] loading outputs/srcoptimized_cache_neg_B/validation_dec.parquet
+2026-05-28 05:00:22,416 [INFO] LightGBM GPU disabled
+2026-05-28 05:01:36,662 [INFO] START predict chunks rows=2018285 chunk=250000 | rss=5960.8 MB
+2026-05-28 05:01:39,396 [INFO] DONE  predict chunks rows=2018285 chunk=250000 in 2.7s | rss=5960.8 MB | delta=0.0 MB
+[100]	valid_0's binary_logloss: 0.413683
+[100]	valid_0's l1: 0.818807
+ mae_quantity  mape_quantity  mean_prediction  min_prediction  pct_pred_lt_0_1  pct_pred_lt_0_5  pct_pred_lt_1_0  delta_vs_baseline                        cache_dir submission
+     2.111804      65.973218          1.09572             0.0        23.252839        56.751205        79.405569          14.795082 outputs/srcoptimized_cache_neg_B           
+wrote reports/two_stage_validation.md
+wrote outputs/two_stage_validation.json
